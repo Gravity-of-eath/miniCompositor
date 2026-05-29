@@ -1,0 +1,8 @@
+{
+    "/dev/fb0" : {
+        "type" : "fb"
+    },
+    "/dev/input/event1" : {
+        "type" : "ts"
+    }
+}

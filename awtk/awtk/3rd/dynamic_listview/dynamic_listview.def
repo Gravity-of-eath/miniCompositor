@@ -1,0 +1,8 @@
+LIBRARY   dynamic_listview
+EXPORTS
+    dynamic_listview_register
+    dynamic_listview_supported_render_mode
+    list_row_create
+    list_row_cast
+    list_row_set_index
+    list_row_get_widget_vtable

@@ -1,0 +1,12 @@
+import os
+import sys
+
+env=DefaultEnvironment().Clone()
+BIN_DIR=os.environ['BIN_DIR'];
+
+src_files = Glob('*.c')
+
+env['LIBS'] = ['spine2d'] + ['spine'] + env['LIBS']
+
+env.Append(CPPPATH=[os.path.abspath('../3rd/spine-cpp/spine-cpp_3.8/include'),os.path.abspath('../src')])
+env.Program(os.path.join(BIN_DIR, 'demo_skn'), src_files);

@@ -1,0 +1,10 @@
+LIBRARY   yps_widget_ico_ex
+EXPORTS
+    yps_widget_ico_ex_register
+    yps_widget_ico_ex_supported_render_mode
+    yps_widget_ico_ex_create
+    yps_widget_ico_ex_cast
+    yps_widget_ico_ex_set_image_list
+    yps_widget_ico_ex_set_image_id
+    yps_widget_ico_ex_get_image_id
+    yps_widget_ico_ex_get_widget_vtable

@@ -1,0 +1,64 @@
+# 任务列表
+
+## 当前任务：awtk-widget-spine2d 从 Spine 4.2 降级到 3.8
+- 开始时间：2026-04-23
+- 目的：规避 Spine 4.x Editor 订阅费用，使用免费的 3.8
+- 状态：进行中
+
+### 步骤
+- [x] 0. 前期调研：确认 3.8 API 兼容性（混合版 3.8 已预先 backport 了 SkeletonRenderer 和 Physics.h）
+- [x] 1. 修改构建脚本 3rd/awtk-widget-spine2d/3rd/SConscript（指向 spine-cpp_3.8）
+- [x] 2. 修改构建脚本 3rd/awtk-widget-spine2d/src/SConscript（删除 spine-cpp-lite 路径）
+- [x] 3. 修改构建脚本 3rd/awtk-widget-spine2d/SConstruct（删除 spine-cpp-lite 路径）
+- [x] 3b. 修改 demos/SConscript（删除 spine-cpp-lite 路径）
+- [x] 4. 修改 src/spine2d/spine_gl.h：删除 #include <spine-cpp-lite.h> 和 renderer_draw_lite 声明
+- [x] 5. 修改 src/spine2d/spine_gl.cpp：删除 renderer_draw_lite 实现
+- [x] 6. 修改 src/spine2d/spine2d.cpp:245：updateWorldTransform(Physics_Update) → updateWorldTransform()
+- [x] 6b. 修复 3.8/src/spine/SkeletonRenderer.cpp（backport 代码用了 4.2 API：getRegion / computeWorldVertices(Slot)，改为 getRendererObject / computeWorldVertices(Bone)）
+- [x] 7. 编译验证（scons）→ 成功：生成 lib/libspine.a (5.2MB)
+- [ ] 8. 用户需要：用 Spine 3.8 Editor 重新导出资源 spineboy-pro.*（代码已就绪，4.2 资源无法被 3.8 runtime 解析）
+
+## 完成状态
+代码改造全部完成并编译通过。后续需用户手动：
+- 用 Spine 3.8 Editor 重新导出 design/default/data/spineboy-pro.{json,skel,atlas} 和 res/assets/default/raw/data/spineboy-pro.*
+- 运行 demo 验证动画播放正常
+
+## 追加修复（2026-04-24）：SkeletonBinary header 格式错误
+- 问题：加载 Spine 3.8 Editor 导出的 water_01.skel 在 Vector.h:162 断言崩溃
+- 初步分析：3.8 runtime header 哈希读成 4.x 格式（8 字节二进制）→ 后续 cursor 错位
+
+## 重大发现与最终修复（2026-04-24）：真实替换为官方 Spine 3.8 runtime
+- 深入调查后发现：`3rd/spine-cpp/spine-cpp_3.8/` 根本不是 3.8 runtime，而是 **Spine 4.0 源码改名** —
+  与 `/mnt/.../3rdLibrary/spine-runtimes-4.0/spine-cpp/` diff 几乎一致。
+- 所以不仅 header，还有 readAnimation（timeline 常量 SLOT_RGBA/BONE_TRANSLATEX 等）、readSkin（4.x 独有的 skin-bones/constraints）、bezierCount 曲线等全是 4.x 格式 —
+  用 3.8 Editor 导出的文件注定无法解析。
+- 在用户同意下采取方案 A：
+  1. 备份原"假 3.8"到 `spine-cpp_3.8.hybrid_bak/`
+  2. 从 github.com/EsotericSoftware/spine-runtimes 3.8 分支克隆官方 C++ runtime
+  3. 替换 `spine-cpp_3.8/include/` 和 `src/` 全目录
+  4. 补齐 hybrid 里 backport 的 `SkeletonRenderer.h/cpp` 和 `BlockAllocator.h`（官方 3.8 无 render 辅助类；spine_gl.cpp 依赖）
+  5. 去掉官方 3.8 分支后期强推升级注入的"拒绝 3.8.75"校验（SkeletonBinary.cpp + SkeletonJson.cpp）
+- 验证（host 端独立测试）：
+  `./test_spine water_01.atlas water_01.skel` →
+  `SUCCESS: bones=38 slots=31 anims=14 skins=1` ✓
+- spine2d.cpp 里加了 NULL 防护：skeletonData 为 NULL 时打印错误退出，避免后续 `new Skeleton(NULL)` 段错误
+- libspine.a 已重建 (~5.2MB)
+- 待用户执行：重编 instrument → 部署到目标机 → 运行查看 water_01 动画
+
+## 说明
+- 旧的 spineboy-pro.skel (4.2 格式) 确定无法被真 3.8 runtime 读取，需用 3.8 Editor 重导（与原步骤 8 一致）
+- 原 hybrid（4.0 改名版）已于 2026-04-24 按用户要求删除，避免误导
+
+## 最终状态：Spine 3.8 降级 + 贴图渲染已全部修复并验证通过 ✓
+（2026-04-24 目标机实测 water_01 动画正常显示贴图、播放正常）
+
+## 追加修复（2026-04-24）：贴图未绑定（显示为黑色剪影）
+- 症状：部署后不 crash，但 spine2d 控件显示黑色的模型投影，没有纹理
+- 根因：`3rd/spine-cpp/spine-cpp_3.8/src/spine/SkeletonRenderer.cpp` 原版代码在 Region/Mesh attachment 分支直接 `texture = attachment->getRendererObject()`，
+  但 AtlasAttachmentLoader 把 attachment 的 rendererObject 设的是 `AtlasRegion*`，
+  真正的 GL 纹理 handle 存在 `AtlasRegion::page->rendererObject`（由 GlTextureLoader 写入）。
+  被当成纹理 ID 的 `AtlasRegion*` 传给 GL 后绑不到任何贴图 → 采样全 0 → 着色后全黑。
+- 修复：SkeletonRenderer.cpp 两处都改成
+  `texture = ((AtlasRegion*)attachment->getRendererObject())->page->getRendererObject();`
+  并 `#include <spine/Atlas.h>`。
+- 说明：此 bug 在原 hybrid 里也同样存在，只是之前 skel 解析就失败，走不到渲染路径，所以没暴露出来

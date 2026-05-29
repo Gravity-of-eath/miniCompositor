@@ -1,0 +1,53 @@
+{
+  "name": "spine2d",
+  "version": "1.0",
+  "assets": "res/assets",
+  "vendor": "zlgopen",
+  "app_name": "org.zlgopen.spine2d",
+  "author": "xianjimli@hotmail.com",
+  "copyright": "Guangzhou ZHIYUAN Electronics Co.,Ltd.",
+  "themes":["default"],
+  "sources": [
+     "demos/*.c",
+     "src/*.c",
+     "src/spine2d/*.c",
+     "src/spine2d/*.cpp",
+     "3rd/spine-cpp/spine-cpp/src/spine/*.cpp",
+     "3rd/spine-cpp/spine-cpp-lite/spine-cpp-lite.cpp",
+     "src/*.h",
+     "src/spine2d/*.h",
+     "3rd/spine-cpp/spine-cpp/src/spine/*.h",
+     "3rd/spine-cpp/spine-cpp/include/spine/*.h",
+     "3rd/spine-cpp/spine-cpp-lite/spine-cpp-lite.h"
+  ],
+  "includes": [
+    "3rd/spine-cpp/spine-cpp/include",
+    "3rd/spine-cpp/spine-cpp-lite"
+  ],
+  "harmonyos": {
+    "icon": "design/default/images/xx/app_icon.png",
+    "title": {
+      "en_US": "MyApp",
+      "zh_CN": "AwtkApp"
+    },
+    "config": {
+      "defaultFont": "default_full"
+    },
+    "sources": [
+       "res/assets.inc",
+       "res/assets/__assets_default.inc"
+    ]
+  },
+  "android": {
+    "sources": [
+       "res/assets.inc",
+       "res/assets/__assets_default.inc"
+    ]
+  },
+  "ios": {
+    "sources": [
+       "res/assets.inc",
+       "res/assets/__assets_default.inc"
+    ]
+  }
+}

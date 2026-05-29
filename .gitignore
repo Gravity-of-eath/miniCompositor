@@ -1,0 +1,42 @@
+# mc build artefacts
+build/
+*.o
+*.a
+*.so
+*.so.*
+!awtk/awtk-linux-fb/lib_t5/*.so      # Mali blobs needed for cross build, no other source
+!awtk/awtk-linux-fb/lib_t5/*.so.*
+
+# Auto-generated dep files (-MMD -MP)
+*.d
+
+# LVGL build outputs
+lvgl9/build/
+lvgl9/liblvgl9.a
+lvgl-release-v9.0/build/
+
+# AWTK build outputs
+awtk/awtk-linux-fb/bin/
+awtk/awtk-linux-fb/lib/
+awtk/awtk-linux-fb/build/
+awtk/awtk-linux-fb/out/
+awtk/awtk/bin/
+awtk/awtk/lib/
+awtk/awtk/build/
+**/awtk-port/**/*.o
+**/awtk-port/**/*.d
+
+# SCons cache
+.sconsign.dblite
+.sconf_temp/
+config.log
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS junk
+.DS_Store
+Thumbs.db

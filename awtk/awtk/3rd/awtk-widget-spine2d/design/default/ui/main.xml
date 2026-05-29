@@ -1,0 +1,23 @@
+<window theme="main" >
+  <image name="home_page_background" x="0" y="0" w="100%" h="100%" image="bg"  />
+  <label x="c" y="10" w="200" h="30" tr_text="title" />
+  <spine2d name="spine2d" x="c" y="m" w="440" h="400" atlas="spineboy-pma.atlas"
+  skeleton="spineboy-pro.skel" scale_x="1" scale_y="1" 
+  action="portal,run"
+  on:anim_start="print('start')"
+  on:anim_once="print('once')"
+  on:anim_end="print('end')"
+  >
+  <draggable />
+</spine2d>
+
+<view x="10" y="b:10" w="-20" h="30" children_layout="default(r=1,c=4,s=10)">
+  <!-- <check_button name="loop" tr_text="loop" value="true"
+  on:value_changed="widget_set('spine2d', 'loop', widget_get('self', 'value'))"/>
+  /> -->
+  <combo_box name="actions" readonly="true" options="portal;run;jump;run-to-idle;shoot;walk"
+  on:value_changed="widget_set('spine2d', 'action', widget_get('self', 'text'))"/>
+  <button name="clone" tr_text="clone" />
+  <button name="close" tr_text="close" />
+</view>
+</window>

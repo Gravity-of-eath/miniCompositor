@@ -1,0 +1,46 @@
+{
+  "name": "demouiold",
+  "version": "1.0",
+  "assets": "res/assets",
+  "vendor": "zlgopen",
+  "app_name": "org.zlgopen.demouiold",
+  "author": "xianjimli@hotmail.com",
+  "copyright": "Guangzhou ZHIYUAN Electronics Co.,Ltd.",
+  "themes":["default", "dark"],
+  "sources": [
+     "demos/vg_common.inc",
+     "demos/assets_old.c",
+     "demos/demo_ui_old_app.c",
+     "res/assets.inc",
+     "res/assets/__assets_dark.inc",
+     "res/assets/__assets_default.inc"
+  ],
+  "web": {
+    "app_type": "c",
+    "assets": "design",
+    "config": {
+      "fontScale": "0.8",
+      "defaultFont": "sans"
+    }
+  },
+  "harmonyos": {
+    "icon": "design/default/images/xx/awtk_icon.png",
+    "title": {
+      "en_US": "DemoUI",
+      "zh_CN": "控件演示"
+    },
+    "config": {
+      "defaultFont": "default_full"
+    },
+    "sources": [
+    ]
+  },
+  "android": {
+    "sources": [
+    ]
+  },
+  "ios": {
+    "sources": [
+    ]
+  }
+}

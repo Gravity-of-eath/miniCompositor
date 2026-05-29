@@ -1,0 +1,12 @@
+awtk
+bin
+lib
+*.o
+*.pyc
+3rd
+release.zip
+release.tar.gz
+release
+.sconsign.dblite
+.vscode/*.*
+/.idea/
