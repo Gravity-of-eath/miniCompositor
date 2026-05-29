@@ -174,9 +174,8 @@ awtk/                   AWTK source + awtk-linux-fb port
       input_thread/input_thread_mc.{c,h}
       lcd_linux/lcd_linux_egl.c   # we hook begin_frame for dirty rect
 
-lvgl/                   LVGL 9.0 sources (pre-built liblvgl.a + headers)
-lvgl9/                  LVGL 9.0 build artefacts (liblvgl9.a)
-lvgl-release-v9.0/      LVGL 9.0 source distribution
+lvgl-release-v9.0/      LVGL 9.0 source distribution (headers used by clients)
+lvgl9/                  LVGL 9.0 build (liblvgl9.a + lv_conf.h)
 ```
 
 

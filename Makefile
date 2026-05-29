@@ -1,17 +1,19 @@
 # mc top-level Makefile.
 #
-# Native (host gcc) build:
+# Native (host gcc) build (no LVGL -- prebuilt lib is aarch64-only):
 #   make
-#   make demos        # also builds LVGL demos if a usable liblvgl.a exists
 #
-# T507 cross build:
+# T507 cross build (everything including LVGL demos):
 #   source /develop/toolchain_t5sdk/environment-carbit.sh
-#   make CROSS=1
-#   make CROSS=1 demos
+#   make CROSS=1                     # compositor + libmc + helpers
+#   make CROSS=1 demos               # demo-fullscreen, demo-popup
+#   make CROSS=1 MC_ENABLE_EGL=1     # explicit GPU compose (auto-on for T507)
 #
-# LVGL: liblvgl.a is shipped pre-built for aarch64 in ./lvgl/.
-#       Demos that depend on LVGL only build when its arch matches the
-#       current build (so default is "CROSS=1 demos").
+# Easiest: ./build.sh T507 (runs both targets + packages output/T507/).
+#
+# LVGL: liblvgl9.a is built in ./lvgl9/ from ./lvgl-release-v9.0/ source.
+#       Headers come from ./lvgl-release-v9.0/, lv_conf.h from ./lvgl9/.
+#       To rebuild liblvgl9.a:  cd lvgl9 && make.
 
 ifdef CROSS
 CC      ?= aarch64-linux-gnu-gcc

@@ -70,7 +70,9 @@ TSLIB_INC_DIR = os.path.abspath("./tslib/T507/include")
 # TSLIB_INC_DIR = None
 
 # enable cursor mouse
-ENABLE_CURSOR = True
+# False for touch-only embedded HMI: with mc input thread, touches come
+# in as pointer events but should not draw a desktop-style mouse cursor.
+ENABLE_CURSOR = False
 
 # null/spinyin/t9/t9ext/pinyin
 # ..example: INPUT_ENGINE = "pinyin"
