@@ -11,9 +11,9 @@
 #
 # Easiest: ./build.sh T507 (runs both targets + packages output/T507/).
 #
-# LVGL: liblvgl9.a is built in ./lvgl9/ from ./lvgl-release-v9.0/ source.
-#       Headers come from ./lvgl-release-v9.0/, lv_conf.h from ./lvgl9/.
-#       To rebuild liblvgl9.a:  cd lvgl9 && make.
+# LVGL: liblvgl9.a + lv_conf.h live in ./deps_libs/T507/lvgl/.
+#       Source distribution: ./deps_source/T507/lvgl-release-v9.0/.
+#       To rebuild the lib:  make -C deps_libs/T507/lvgl CROSS=1
 
 ifdef CROSS
 CC      ?= aarch64-linux-gnu-gcc
@@ -157,10 +157,14 @@ BUS_BIN      := $(OUT)/mc-bus-tool
 LAUNCHER_BIN := $(OUT)/mc-launcher
 
 # --- LVGL demos --------------------------------------------------------
-# Now using LVGL 9.0 from lvgl-release-v9.0/ + lv_conf.h in lvgl9/.
-LVGL_INC    := -Ilvgl-release-v9.0 -Ilvgl9 -DLV_CONF_INCLUDE_SIMPLE -Iports/lvgl
-LVGL_LIB    := lvgl9/liblvgl9.a
-LVGL_LIBS   := $(LVGL_LIB) -lm -lpthread
+# LVGL 9.0: source in deps_source/T507/, prebuilt lib + lv_conf in deps_libs/T507/.
+# (T507 default; future platforms get their own deps_{source,libs}/<P>/lvgl/.)
+LVGL_PLATFORM ?= T507
+LVGL_SRC_DIR  := deps_source/$(LVGL_PLATFORM)/lvgl-release-v9.0
+LVGL_LIB_DIR  := deps_libs/$(LVGL_PLATFORM)/lvgl
+LVGL_INC      := -I$(LVGL_SRC_DIR) -I$(LVGL_LIB_DIR) -DLV_CONF_INCLUDE_SIMPLE -Iports/lvgl
+LVGL_LIB      := $(LVGL_LIB_DIR)/liblvgl9.a
+LVGL_LIBS     := $(LVGL_LIB) -lm -lpthread
 
 PORT_SRC    := ports/lvgl/lv_port_mc.c
 PORT_OBJ    := $(PORT_SRC:%.c=$(OUT)/%.o)

@@ -4,25 +4,30 @@ build/
 *.a
 *.so
 *.so.*
-!awtk/awtk-linux-fb/lib_t5/*.so      # Mali blobs needed for cross build, no other source
-!awtk/awtk-linux-fb/lib_t5/*.so.*
+# Whitelist: prebuilt blobs we DO commit, no source available
+!deps_libs/*/mali/*.so
+!deps_libs/*/mali/*.so.*
+!deps_libs/*/mali/*.a
+!deps_libs/*/tslib/lib/*.so
+!deps_libs/*/tslib/lib/*.so.*
+!deps_libs/*/tslib/lib/ts/*.so
+# Whitelist: LVGL pre-built static lib (rebuildable from source under deps_source/)
+!deps_libs/*/lvgl/liblvgl9.a
 
 # Auto-generated dep files (-MMD -MP)
 *.d
 
-# LVGL build outputs
-lvgl9/build/
-lvgl9/liblvgl9.a
-lvgl-release-v9.0/build/
+# LVGL: intermediate build dir only (lib + conf are kept)
+deps_libs/*/lvgl/build/
 
 # AWTK build outputs
-awtk/awtk-linux-fb/bin/
-awtk/awtk-linux-fb/lib/
-awtk/awtk-linux-fb/build/
-awtk/awtk-linux-fb/out/
-awtk/awtk/bin/
-awtk/awtk/lib/
-awtk/awtk/build/
+deps_source/*/awtk/awtk-linux-fb/bin/
+deps_source/*/awtk/awtk-linux-fb/lib/
+deps_source/*/awtk/awtk-linux-fb/build/
+deps_source/*/awtk/awtk-linux-fb/out/
+deps_source/*/awtk/awtk/bin/
+deps_source/*/awtk/awtk/lib/
+deps_source/*/awtk/awtk/build/
 **/awtk-port/**/*.o
 **/awtk-port/**/*.d
 
@@ -41,5 +46,5 @@ config.log
 .DS_Store
 Thumbs.db
 
-# build artefacts produced by build.sh
+# build.sh products
 output/

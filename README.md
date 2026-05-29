@@ -54,7 +54,7 @@ See `docs/DESIGN.md` for the architecture in detail.
 | CPU compositor (`--backend fb`)  | done           |
 | **GPU compositor (`--backend egl`, Mali)** | **done** |
 | LVGL 9.0 port (`ports/lvgl/`)    | done           |
-| AWTK port (`awtk/awtk-linux-fb/awtk-port/egl_devices/mc/`) | done |
+| AWTK port (`deps_source/T507/awtk/awtk-linux-fb/awtk-port/egl_devices/mc/`) | done |
 | `demo-fullscreen` + `demo-popup` | done           |
 | AWTK `demo1` running on mc       | done           |
 | 4-app concurrent test on T507    | done, smooth   |
@@ -90,7 +90,7 @@ Produces `build/{mc-compositor, mc-fill-client, mc-test-client, mc-bus-tool, lib
 source /develop/toolchain_t5sdk/environment-carbit.sh
 make CROSS=1                              # core + GPU backend auto-enabled
 make CROSS=1 demos                        # LVGL demo-fullscreen, demo-popup
-# AWTK build is a separate flow under awtk/awtk-linux-fb/, see below.
+# AWTK build is a separate flow under deps_source/T507/awtk/awtk-linux-fb/.
 ```
 
 Outputs in `build/`. All ELFs aarch64.
@@ -98,13 +98,23 @@ Outputs in `build/`. All ELFs aarch64.
 #### AWTK (separate scons build)
 
 ```sh
-cd awtk/awtk-linux-fb
+cd deps_source/T507/awtk/awtk-linux-fb
 ./build.sh T507    # selects t5_awtk_config_define.py (LCD_DEVICES=mc)
 ```
 
-Produces `awtk/awtk-linux-fb/bin/{libawtk.so, demo1, ...}`. The AWTK lcd
-backend lives in `awtk-port/egl_devices/mc/egl_devices.c` and renders
-through GL FBO bound to a mc dma-buf.
+Produces `deps_source/T507/awtk/awtk-linux-fb/bin/{libawtk.so, demo1, ...}`.
+The AWTK lcd backend lives in
+`deps_source/T507/awtk/awtk-linux-fb/awtk-port/egl_devices/mc/egl_devices.c`
+and renders through GL FBO bound to a mc dma-buf.
+
+#### Easiest: build.sh
+
+```sh
+./build.sh T507
+```
+
+runs all three builds (mc, LVGL demos, AWTK) and produces a deployable
+tarball at `output/T507/mc-T507-<timestamp>.tar.gz`.
 
 
 ## Run on T507
@@ -112,25 +122,21 @@ through GL FBO bound to a mc dma-buf.
 After pushing the binaries:
 
 ```sh
-# mc binaries
-adb push build/mc-compositor build/demo-fullscreen build/demo-popup /data/mc_demo/
-
-# AWTK
-adb push awtk/awtk-linux-fb/bin/libawtk.so /data/awtk_mc/bin/
-adb push awtk/awtk-linux-fb/bin/demo1     /data/awtk_mc/bin/
-adb push awtk/awtk-linux-fb/release/assets /data/awtk_mc/res/
+# Use the build.sh-produced staging tree instead of pushing files manually:
+output/T507/staging/scripts/deploy.sh        # adb pushes everything to /data/mc_stack/
+adb shell /data/mc_stack/start.sh            # boot compositor + 4 apps
+adb shell /data/mc_stack/stop.sh             # tear it all down
 ```
 
-Start them (use `setsid sh -c "... &" </dev/null >/dev/null 2>&1 &` to
-detach from the shell session):
+The bundled `start.sh` is essentially the same as running these by hand
+(`setsid sh -c "... &" </dev/null >/dev/null 2>&1 &` for each so they
+survive the adb shell):
 
 ```sh
 mc-compositor -v --backend egl --socket /tmp/mc.sock --input /dev/input/event1 &
 
-# AWTK
-MC_SOCKET=/tmp/mc.sock MC_APP_NAME=awtk-demo1 /data/awtk_mc/bin/demo1 &
+MC_SOCKET=/tmp/mc.sock MC_APP_NAME=awtk-demo1 awtk-demo1 &
 
-# LVGL
 demo-fullscreen --socket /tmp/mc.sock --name dashboard    --bg 0xFF205080 &
 demo-fullscreen --socket /tmp/mc.sock --name diagnostics  --bg 0xFFB02040 &
 demo-popup      --socket /tmp/mc.sock --x 300 --y 150 --w 400 --h 240 &
@@ -167,26 +173,35 @@ tools/                  mc-fill-client, mc-bus-tool, egl_dmabuf_probe
 launcher/               mc-launcher (auto-restart supervisor)
 docs/                   architecture, Allwinner G2D reference, screenshots
 
-awtk/                   AWTK source + awtk-linux-fb port
-  awtk-linux-fb/
-    awtk-port/
-      egl_devices/mc/        # mc lcd backend (GL FBO over mc dma-buf)
-      input_thread/input_thread_mc.{c,h}
-      lcd_linux/lcd_linux_egl.c   # we hook begin_frame for dirty rect
+deps_source/            third-party source trees (per platform)
+  T507/
+    lvgl-release-v9.0/  LVGL 9.0 source distribution (headers used by clients)
+    awtk/               AWTK source + its awtk-linux-fb port
+      awtk-linux-fb/
+        awtk-port/
+          egl_devices/mc/       # mc lcd backend (GL FBO over mc dma-buf)
+          input_thread/input_thread_mc.{c,h}
+          lcd_linux/lcd_linux_egl.c   # we hook begin_frame for dirty rect
 
-lvgl-release-v9.0/      LVGL 9.0 source distribution (headers used by clients)
-lvgl9/                  LVGL 9.0 build (liblvgl9.a + lv_conf.h)
+deps_libs/              prebuilt third-party libraries (per platform)
+  T507/
+    lvgl/               liblvgl9.a + lv_conf.h + Makefile (rebuilds from deps_source)
+    mali/               Mali userspace blobs (libEGL, libGLESv2, libmali, ...)
+    tslib/              tslib runtime + plugins for T507 (lib/, include/)
 ```
 
 
 ## Repo notes
 
-- AWTK source tree under `awtk/` is large; if you only need to read the
-  mc integration, look at `awtk/awtk-linux-fb/awtk-port/egl_devices/mc/`
-  and `awtk/awtk-linux-fb/awtk-port/input_thread/input_thread_mc.{c,h}`.
-- `awtk/awtk-linux-fb/bin/`, `awtk/awtk-linux-fb/build/`, and
-  `awtk/awtk-linux-fb/lib/` are build artifacts and gitignored.
-- `build/` and `lvgl9/build/` are gitignored.
-- Mali userspace blobs (`awtk/awtk-linux-fb/lib_t5/libmali.so` etc.) are
-  committed because they're not redistributable from anywhere else
-  reachable to the toolchain.
+- AWTK source tree under `deps_source/T507/awtk/` is large; if you only
+  need to read the mc integration, look at
+  `deps_source/T507/awtk/awtk-linux-fb/awtk-port/egl_devices/mc/` and
+  `.../input_thread/input_thread_mc.{c,h}`.
+- AWTK build outputs (`bin/`, `build/`, `lib/`, `out/` under
+  `deps_source/T507/awtk/awtk-linux-fb/`) are gitignored.
+- `build/`, `deps_libs/T507/lvgl/build/`, and `output/` are gitignored.
+- Mali userspace blobs (`deps_libs/T507/mali/libmali.so`, libEGL.so,
+  libGLESv2.so) are committed because they're not redistributable
+  from anywhere else reachable to the toolchain.
+- Adding another platform: create `deps_source/<P>/` + `deps_libs/<P>/`
+  with the analogous layout, and pass `LVGL_PLATFORM=<P>` to make.

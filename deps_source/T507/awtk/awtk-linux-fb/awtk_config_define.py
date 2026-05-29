@@ -21,18 +21,31 @@ OS_LINKFLAGS = " -dynamic "
 # OS_LIBS = None "dl","m","pthread", 
 OS_LIBS = ["EGL", "GLESv2","spine2d","spine","message","mc"]
 
-# Path to the mc framework root (where build/libmc.a + libmc/include live).
-# Adjust if you put the mc tree elsewhere.
-# Layout: shared_fb_fwk/awtk/awtk-linux-fb -> "../.." = shared_fb_fwk
-MC_ROOT = os.path.abspath("../..")
+# Path to the mc framework root and shared dep dirs. After the
+# deps_{libs,source}/ reorg the AWTK source lives at
+#   <MC_ROOT>/deps_source/T507/awtk/awtk-linux-fb
+# so from awtk-linux-fb/ we step up four levels to reach MC_ROOT.
+MC_ROOT  = os.path.abspath("../../../..")
+DEPS_LIBS_T507 = os.path.join(MC_ROOT, "deps_libs/T507")
 
 # compile lib paths
 # ..example: OS_LIBPATH = ["/path/to/libdir1", "/path/to/libdir2"]
-OS_LIBPATH = [os.path.abspath("./lib_t5"),"./lib","/opt/t5sdk/aarch64-buildroot-linux-gnu/sysroot/lib","/opt/t5sdk/aarch64-buildroot-linux-gnu/sysroot/usr/lib","/opt/t5sdk/aarch64-buildroot-linux-gnu/sysroot/usr/lib64", os.path.join(MC_ROOT, "build")]
+OS_LIBPATH = [
+    os.path.join(DEPS_LIBS_T507, "mali"),               # Mali EGL/GLESv2/libmali blobs (was ./lib_t5)
+    "./lib",
+    "/opt/t5sdk/aarch64-buildroot-linux-gnu/sysroot/lib",
+    "/opt/t5sdk/aarch64-buildroot-linux-gnu/sysroot/usr/lib",
+    "/opt/t5sdk/aarch64-buildroot-linux-gnu/sysroot/usr/lib64",
+    os.path.join(MC_ROOT, "build"),                     # libmc.a
+]
 
 # compile include paths
 # ..example: OS_CPPPATH = ["/path/to/incdir1", "/path/to/incdir2"]
-OS_CPPPATH = ["/opt/t5sdk/aarch64-buildroot-linux-gnu/sysroot/usr/include", os.path.abspath("./include_t5/libmessage"), os.path.join(MC_ROOT, "libmc/include")]
+OS_CPPPATH = [
+    "/opt/t5sdk/aarch64-buildroot-linux-gnu/sysroot/usr/include",
+    os.path.abspath("./include_t5/libmessage"),
+    os.path.join(MC_ROOT, "libmc/include"),
+]
 0
  
 # compile tools prefix CC's name
@@ -58,15 +71,10 @@ TOOLS_RANLIB = None
 TOOLS_PREFIX = "/develop/toolchain_t507/bin/aarch64-linux-gnu-"
 # TOOLS_PREFIX = '/develop/toolchain_t113_musl/bin/arm-openwrt-linux-muslgnueabi-'
 
-# tslib lib path
-# ..example: TSLIB_LIB_DIR = "/path/to/tslib/lib"
-TSLIB_LIB_DIR = os.path.abspath("./tslib/T507/lib")
-# TSLIB_LIB_DIR = None
-
-
+# tslib lib path (was ./tslib/T507/lib — now under deps_libs/T507/tslib/)
+TSLIB_LIB_DIR = os.path.join(DEPS_LIBS_T507, "tslib/lib")
 # tslib include path
-# ..example: TSLIB_INC_DIR = "/path/to/tslib/include"
-TSLIB_INC_DIR = os.path.abspath("./tslib/T507/include")
+TSLIB_INC_DIR = os.path.join(DEPS_LIBS_T507, "tslib/include")
 # TSLIB_INC_DIR = None
 
 # enable cursor mouse

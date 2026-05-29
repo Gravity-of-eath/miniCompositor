@@ -89,23 +89,25 @@ cp -v build/demo-popup      "$STAGE/bin/"
 
 # ---------- 2. AWTK (optional) -----------------------------------------
 
+AWTK_LINUX_FB="deps_source/$PLATFORM/awtk/awtk-linux-fb"
+
 if [[ "${SKIP_AWTK:-0}" == "1" ]]; then
     log "SKIP_AWTK=1 set, skipping AWTK build"
 else
     log "building AWTK + demo1 (scons)"
     (
-        cd awtk/awtk-linux-fb
+        cd "$AWTK_LINUX_FB"
         # build.sh T507 picks the t5 config + runs scons cleanly
         ./build.sh "$PLATFORM"
     )
-    cp -v awtk/awtk-linux-fb/bin/libawtk.so "$STAGE/lib/"
-    cp -v awtk/awtk-linux-fb/bin/demo1      "$STAGE/bin/awtk-demo1"
+    cp -v "$AWTK_LINUX_FB/bin/libawtk.so" "$STAGE/lib/"
+    cp -v "$AWTK_LINUX_FB/bin/demo1"      "$STAGE/bin/awtk-demo1"
 fi
 
 # ---------- 3. tslib runtime (needed by AWTK demo1) --------------------
 
 log "copying tslib runtime (libts + plugins, aarch64)"
-TSLIB_SRC="awtk/awtk-linux-fb/tslib/$PLATFORM/lib"
+TSLIB_SRC="deps_libs/$PLATFORM/tslib/lib"
 if [[ -d "$TSLIB_SRC" ]]; then
     cp -v "$TSLIB_SRC"/libts-1.3.so.0.1.3 "$STAGE/lib/"
     (cd "$STAGE/lib" && ln -sf libts-1.3.so.0.1.3 libts-1.3.so.0)
@@ -117,9 +119,9 @@ fi
 
 # ---------- 4. AWTK demo resources -------------------------------------
 
-if [[ -d awtk/awtk-linux-fb/release/assets ]]; then
+if [[ -d "$AWTK_LINUX_FB/release/assets" ]]; then
     log "copying AWTK demo assets"
-    cp -r awtk/awtk-linux-fb/release/assets "$STAGE/res/"
+    cp -r "$AWTK_LINUX_FB/release/assets" "$STAGE/res/"
 else
     warn "AWTK release/assets not found -- AWTK demo will run without UI assets"
 fi
