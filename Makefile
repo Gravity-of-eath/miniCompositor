@@ -37,10 +37,16 @@ ifeq ($(MC_ENABLE_G2D),)
   ifneq ($(findstring t507,$(SDKTARGETSYSROOT)),)
     MC_ENABLE_G2D := 1
   endif
+  ifneq ($(findstring t113,$(SDKTARGETSYSROOT)),)
+    MC_ENABLE_G2D := 1
+  endif
   ifneq ($(findstring sun50i,$(SDKTARGETSYSROOT)),)
     MC_ENABLE_G2D := 1
   endif
   ifneq ($(findstring sun8i,$(SDKTARGETSYSROOT)),)
+    MC_ENABLE_G2D := 1
+  endif
+  ifneq ($(findstring sun8iw,$(SDKTARGETSYSROOT)),)
     MC_ENABLE_G2D := 1
   endif
   ifneq ($(findstring allwinner,$(SDKTARGETSYSROOT)),)
@@ -102,6 +108,24 @@ ifeq ($(MC_ENABLE_EGL),1)
     ACCEL_EXTRA_LDFLAGS += -L$(T5_EGL_SYSROOT)/usr/lib \
                            -Wl,-rpath-link=$(T5_EGL_SYSROOT)/usr/lib
   endif
+endif
+
+# G2D compositor backend (Allwinner sun8i/sun50i). Lets the compositor
+# blit each client surface directly into the fb back-buffer via the G2D
+# 2D engine instead of CPU memcpy/blend. Auto-enabled on T113 (no Mali,
+# so backend_g2d is the only HW compose path). T507 has Mali and uses
+# backend_egl, but can still build backend_g2d for benchmarking.
+ifeq ($(MC_ENABLE_BACKEND_G2D),)
+  ifneq ($(findstring t113,$(SDKTARGETSYSROOT)),)
+    MC_ENABLE_BACKEND_G2D := 1
+  endif
+  ifneq ($(findstring sun8iw,$(SDKTARGETSYSROOT)),)
+    MC_ENABLE_BACKEND_G2D := 1
+  endif
+endif
+ifeq ($(MC_ENABLE_BACKEND_G2D),1)
+  ACCEL_CFLAGS    += -DMC_ENABLE_BACKEND_G2D
+  ACCEL_EXTRA_SRC += compositor/backend_g2d.c
 endif
 
 MC_CFLAGS  := -std=gnu99 -Wall -Wextra -Wno-unused-parameter \
@@ -229,10 +253,13 @@ clean:
 print-config:
 	@echo "CC               = $(CC)"
 	@echo "SDKTARGETSYSROOT = $(SDKTARGETSYSROOT)"
-	@echo "MC_ENABLE_G2D    = $(MC_ENABLE_G2D)"
-	@echo "MC_ENABLE_RGA    = $(MC_ENABLE_RGA)"
-	@echo "ACCEL_CFLAGS     = $(ACCEL_CFLAGS)"
-	@echo "ACCEL_EXTRA_SRC  = $(ACCEL_EXTRA_SRC)"
+	@echo "MC_ENABLE_G2D         = $(MC_ENABLE_G2D)"
+	@echo "MC_ENABLE_RGA         = $(MC_ENABLE_RGA)"
+	@echo "MC_ENABLE_EGL         = $(MC_ENABLE_EGL)"
+	@echo "MC_ENABLE_BACKEND_G2D = $(MC_ENABLE_BACKEND_G2D)"
+	@echo "LVGL_PLATFORM         = $(LVGL_PLATFORM)"
+	@echo "ACCEL_CFLAGS          = $(ACCEL_CFLAGS)"
+	@echo "ACCEL_EXTRA_SRC       = $(ACCEL_EXTRA_SRC)"
 	@echo "CFLAGS_ALL       = $(CFLAGS_ALL)"
 	@echo "LDFLAGS_ALL      = $(LDFLAGS_ALL)"
 	@echo "LVGL_LIB         = $(LVGL_LIB)"

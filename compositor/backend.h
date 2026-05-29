@@ -12,6 +12,29 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Forward declarations -- both types appear inside each other's
+ * function-pointer prototypes; without these, GCC treats the
+ * prototype-scope `struct X *` as a fresh local tag and emits
+ * "incompatible pointer type" when the ops table is later filled in. */
+struct mc_backend;
+struct mc_surface;
+
+/* When a backend can drive the whole compose loop itself (HW path:
+ * Mali GPU on T507 via backend_egl, G2D blitter on T113 via backend_g2d),
+ * it sets `hw_compose` on its mc_backend. compose.c walks visible
+ * surfaces bottom-up and calls begin_frame / draw_surface(...) /
+ * end_frame instead of doing per-pixel CPU blits, then calls
+ * backend->present() to swap.
+ *
+ * Leaving `hw_compose` NULL keeps the backend on the CPU path (the
+ * compositor reads back via get_buffer(), writes per-surface blits,
+ * then present()). backend_fb and backend_ppm work this way. */
+struct mc_backend_hw_compose_ops {
+    void (*begin_frame)  (struct mc_backend *be);
+    void (*draw_surface) (struct mc_backend *be, struct mc_surface *sf);
+    void (*end_frame)    (struct mc_backend *be);
+};
+
 struct mc_backend {
     const char *name;
 
@@ -23,7 +46,9 @@ struct mc_backend {
                 int w_hint, int h_hint,
                 int *out_w, int *out_h, int *out_stride);
 
-    /* Return current writable back-buffer (BGRA8888, full screen). */
+    /* Return current writable back-buffer (BGRA8888, full screen).
+     * May return NULL on HW-compose backends that don't expose CPU
+     * mapping. compose.c only calls this on the CPU path. */
     uint8_t *(*get_buffer)(struct mc_backend *be);
 
     /* Physical address of the current back-buffer in DRAM, or 0 if the
@@ -38,27 +63,26 @@ struct mc_backend {
     /* Close & release. */
     void (*close)(struct mc_backend *be);
 
+    /* Optional HW compose hooks (see comment on struct above). NULL ->
+     * CPU compose path. */
+    const struct mc_backend_hw_compose_ops *hw_compose;
+
     void *priv;
 };
 
 extern struct mc_backend backend_fb;
 extern struct mc_backend backend_ppm;
 
-/* GPU compositor backend (Mali / EGL window on /dev/fb0). Doesn't expose
- * a CPU-writable buffer or use the per-surface CPU blit path; instead it
- * provides direct entry points that compose.c calls when
- * `s->gpu_compose` is set. The struct mc_backend interface only needs
- * `open`/`close`/`present` -- the rest are stubbed/unused.
- * Only compiled in when MC_ENABLE_EGL=1; otherwise main.c never selects
- * "egl" so this symbol won't be referenced. */
 #ifdef MC_ENABLE_EGL
 extern struct mc_backend backend_egl;
-struct mc_server;
-struct mc_surface;
-void mc_backend_egl_begin_frame  (struct mc_backend *be);
-void mc_backend_egl_draw_surface (struct mc_backend *be,
-                                  struct mc_surface *sf);
-void mc_backend_egl_end_frame    (struct mc_backend *be);
+#endif
+
+#ifdef MC_ENABLE_BACKEND_G2D
+/* T113 / sun8iw path: blit each client dma-buf into the fb back-buffer
+ * via /dev/g2d, then page-flip via the standard fb ioctl. Like
+ * backend_egl, this is selected with --backend g2d, sets hw_compose,
+ * and is used in place of the CPU per-pixel path. */
+extern struct mc_backend backend_g2d;
 #endif
 
 #endif

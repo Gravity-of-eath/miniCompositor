@@ -362,7 +362,7 @@ static void egl_close(struct mc_backend *be)
 /* Direct GPU compose entry points                                    */
 /* ------------------------------------------------------------------ */
 
-void mc_backend_egl_begin_frame(struct mc_backend *be)
+static void egl_begin_frame(struct mc_backend *be)
 {
     struct egl_priv *p = be->priv;
     if (!p) return;
@@ -380,7 +380,7 @@ void mc_backend_egl_begin_frame(struct mc_backend *be)
     glVertexAttribPointer(p->a_pos, 2, GL_FLOAT, GL_FALSE, 0, 0);
 }
 
-void mc_backend_egl_draw_surface(struct mc_backend *be, struct mc_surface *sf)
+static void egl_draw_surface(struct mc_backend *be, struct mc_surface *sf)
 {
     struct egl_priv *p = be->priv;
     if (!p || !sf) return;
@@ -409,11 +409,17 @@ void mc_backend_egl_draw_surface(struct mc_backend *be, struct mc_surface *sf)
     glDrawArrays(GL_TRIANGLES, 0, 6);
 }
 
-void mc_backend_egl_end_frame(struct mc_backend *be)
+static void egl_end_frame(struct mc_backend *be)
 {
     /* Nothing per-frame here; mc_backend.present() does eglSwapBuffers. */
     (void)be;
 }
+
+static const struct mc_backend_hw_compose_ops egl_hw_compose_ops = {
+    .begin_frame  = egl_begin_frame,
+    .draw_surface = egl_draw_surface,
+    .end_frame    = egl_end_frame,
+};
 
 struct mc_backend backend_egl = {
     .name            = "egl",
@@ -422,4 +428,5 @@ struct mc_backend backend_egl = {
     .get_buffer_phys = NULL,
     .present         = egl_present,
     .close           = egl_close,
+    .hw_compose      = &egl_hw_compose_ops,
 };

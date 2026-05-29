@@ -25,7 +25,8 @@ static void usage(const char *prog)
         "  -s, --socket PATH      socket path (default /var/run/mc.sock)\n"
         "  -w, --width N          screen width  (default 800)\n"
         "  -h, --height N         screen height (default 480)\n"
-        "  -b, --backend NAME     'fb' (CPU), 'egl' (Mali GPU on fb0), or 'ppm' (default: fb)\n"
+        "  -b, --backend NAME     'fb' (CPU), 'egl' (Mali GPU on fb0),\n"
+        "                         'g2d' (Allwinner G2D), or 'ppm' (default: fb)\n"
         "  -o, --output PATH      backend arg (fb device or ppm path)\n"
         "  -i, --input PATH       input event device (default: autodetect)\n"
         "      --no-input         disable touch input\n"
@@ -86,13 +87,19 @@ int main(int argc, char **argv)
     }
 
     struct mc_backend *be = NULL;
-    int gpu_compose = 0;
     if (strcmp(backend_name, "fb")  == 0) be = &backend_fb;
     else if (strcmp(backend_name, "ppm") == 0) be = &backend_ppm;
 #ifdef MC_ENABLE_EGL
-    else if (strcmp(backend_name, "egl") == 0) { be = &backend_egl; gpu_compose = 1; }
+    else if (strcmp(backend_name, "egl") == 0) be = &backend_egl;
+#endif
+#ifdef MC_ENABLE_BACKEND_G2D
+    else if (strcmp(backend_name, "g2d") == 0) be = &backend_g2d;
 #endif
     else { fprintf(stderr, "unknown backend: %s\n", backend_name); return 1; }
+    /* gpu_compose mirrors "backend takes over the per-frame draw" --
+     * derived from the backend, not a separate flag, so adding new
+     * HW-compose backends is one-line. */
+    int gpu_compose = be->hw_compose ? 1 : 0;
 
     signal(SIGINT,  on_sig);
     signal(SIGTERM, on_sig);

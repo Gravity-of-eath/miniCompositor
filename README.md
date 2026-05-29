@@ -10,7 +10,8 @@ The current implementation targets **T507 (Allwinner sun50iw, Mali-G31)**
 end-to-end; other platforms reuse the framework with CPU compositing
 until they get their own HW accel backend wired in.
 
-See `docs/DESIGN.md` for the architecture in detail.
+See `docs/DESIGN.md` for the architecture in detail and
+`docs/PORTING.md` for how to bring up a new platform.
 
 
 ## What runs today
@@ -154,7 +155,7 @@ These are off by default; set them to 1 to enable per-frame logging.
 | env | what it shows |
 |---|---|
 | `MC_COMPOSE_TRACE`  | `LOG_I` line per CPU compose with painted px and µs |
-| `MC_FB_VSYNC`       | enable `FBIO_WAITFORVSYNC` on CPU backend (off by default; T507 BSP stub) |
+| `MC_FB_VSYNC`       | enable `FBIO_WAITFORVSYNC` on CPU/G2D backend (off by default; T507 BSP stub, expected to work on T113) |
 | `MC_COMPOSE_HZ`     | rate-limit compose (default 60) for CPU backend |
 | `MC_ALLOC`          | force surface allocator: `dma-heap` / `ion` / `g2d` / `memfd` |
 | `MC_SOCKET`         | client-side: socket path (default `/tmp/mc.sock`) |

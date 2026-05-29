@@ -114,14 +114,12 @@ void mc_compose_frame(struct mc_server *s, struct mc_backend *be)
 {
     if (!be) return;
 
-    /* GPU-backed compositor: completely separate code path. We just
-     * walk visible surfaces bottom-up and ask the backend to draw
-     * each as a textured quad. No CPU clear/blit/blend, no damage
-     * tracking (Mali draws the full screen each frame -- it's ~5ms
-     * for fullscreen + popup, faster than the CPU damage-aware path
-     * was when busy). */
-#ifdef MC_ENABLE_EGL
-    if (s->gpu_compose) {
+    /* HW compose path (Mali GPU on T507, G2D on T113, future others):
+     * the backend takes over the per-frame draw via hw_compose ops.
+     * We walk visible surfaces bottom-up and let it draw each one --
+     * no CPU clear/blit/blend, no damage tracking. */
+    if (be->hw_compose) {
+        const struct mc_backend_hw_compose_ops *ops = be->hw_compose;
         struct mc_surface *vis[MC_MAX_SURFACES];
         int nv = 0;
         for (int i = 0; i < MC_MAX_SURFACES; i++) {
@@ -139,14 +137,14 @@ void mc_compose_frame(struct mc_server *s, struct mc_backend *be)
             }
             vis[j] = cur;
         }
-        mc_backend_egl_begin_frame(be);
+        ops->begin_frame(be);
         for (int i = 0; i < nv; i++) {
             int idx = vis[i]->pending_idx >= 0
                     ? vis[i]->pending_idx : vis[i]->cur_scanout;
             if (idx < 0) continue;
-            mc_backend_egl_draw_surface(be, vis[i]);
+            ops->draw_surface(be, vis[i]);
         }
-        mc_backend_egl_end_frame(be);
+        ops->end_frame(be);
         be->present(be);
         for (int i = 0; i < MC_MAX_SURFACES; i++) {
             struct mc_surface *sf = &s->surfaces[i];
@@ -166,7 +164,6 @@ void mc_compose_frame(struct mc_server *s, struct mc_backend *be)
         }
         return;
     }
-#endif
 
     const struct mc_accel_ops *ops = ensure_accel();
 
