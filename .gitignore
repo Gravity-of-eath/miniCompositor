@@ -40,3 +40,6 @@ config.log
 # OS junk
 .DS_Store
 Thumbs.db
+
+# build artefacts produced by build.sh
+output/
