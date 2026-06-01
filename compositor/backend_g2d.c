@@ -335,6 +335,17 @@ static void g2d_draw_surface(struct mc_backend *be, struct mc_surface *sf)
     if (b->shm_fd >= 0) {
         g2d_blt_h blt;
         memset(&blt, 0, sizeof(blt));
+
+        /* Flush the client-written source out of CPU cache before G2D
+         * (DMA via the IOMMU) reads it. On T113 (Cortex-A7, PIPT D-cache)
+         * the sunxi-ion dma_buf_map_attachment(DMA_TO_DEVICE) does NOT
+         * clean the cache, so without this G2D picks up stale lines and
+         * the image shows random horizontal white streaks. Mirrors the
+         * explicit g2d_tina_mem_flush() fix in the verified Awtk_g2d
+         * reference (commit "背景图片会出现横向随机白色线条问题"). */
+        dmabuf_sync(b->shm_fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE);
+        dmabuf_sync(b->shm_fd, DMA_BUF_SYNC_END   | DMA_BUF_SYNC_WRITE);
+
         blt.flag_h = G2D_BLT_NONE_H;               /* mixer blit */
         fill_img_surface(&blt.src_image_h, sf, b);
         fill_img_back(p, &blt.dst_image_h, sf->x, sf->y, sf->w, sf->h);
