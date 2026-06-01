@@ -1,42 +1,39 @@
 /*
- * G2D compositor backend (Allwinner sun8iw / T113, sun50iw / T507).
+ * G2D compositor backend (Allwinner sun8iw / T113 primarily; will also
+ * run on T507 if you prefer G2D over Mali EGL for some reason).
  *
  * Same model as backend_egl, but using the /dev/g2d 2D engine instead
  * of Mali. compose.c walks visible surfaces bottom-up and calls our
- * hw_compose ops; each draw_surface() is one G2D blit (opaque) or
- * blend (popups with alpha). present() page-flips the fb just like
- * backend_fb.
+ * hw_compose ops; each draw_surface() is one G2D BITBLT. begin_frame
+ * clears the back buffer via G2D FILLRECT. present() page-flips the
+ * fb the same way backend_fb does.
  *
- * STATUS: skeleton. This file:
- *   - Opens /dev/fb0 (mmap + smem_start probe) and /dev/g2d.
- *   - Wires the open/get_buffer/present/close + hw_compose ops table.
- *   - begin_frame / draw_surface / end_frame are TODO and currently
- *     fall back to CPU memcpy/blend into the fb back-buffer (same
- *     thing backend_fb's CPU path does, just routed through this
- *     backend's plumbing). This keeps `--backend g2d` working end-to-
- *     end on T113 before the real G2D blits are wired.
+ * G2D 1.0 vs 2.0 ABI:
+ *   - T113 (sun8iw20) is NOT in the G2D_V2X_SUPPORT list (verified in
+ *     deps_source/T113/sunxi_g2d-main/g2d_driver_i.h), so it only
+ *     accepts the 1.0 ioctls: G2D_CMD_BITBLT (0x50) / G2D_CMD_FILLRECT
+ *     (0x51). The 2.0 _H series (0x55+) returns -EINVAL.
+ *   - This backend currently targets 1.0 only. T507 builds normally
+ *     use backend_egl; if you ever want backend_g2d on T507 too, the
+ *     ioctl numbers happen to coexist in the same driver so adding a
+ *     2.0 code path is a follow-up, not a rewrite.
  *
- * To finish:
- *   1. Switch begin_frame to G2D fill (clear back buffer via
- *      G2D_CMD_FILLRECT_H).
- *   2. Switch draw_surface to G2D BITBLT_H / BLD_H using the
- *      surface's dma-buf fd as the source and fb_phys[back_idx] as the
- *      destination. The ABI definitions (g2d_image_enh, ioctl numbers)
- *      already live in compositor/accel_g2d.c -- factor the shared bits
- *      into accel_g2d.h or copy them here, but do NOT re-derive them.
- *   3. end_frame: single SYNC ioctl (one wait per frame instead of per
- *      blit). Real present() then page-flips.
- *
- * Why a separate backend instead of just MC_ENABLE_G2D=1 with
- * --backend fb? accel_g2d is per-blit and gets called from the CPU
- * compose loop in compose.c, which still does the screen clear and the
- * surface sort on CPU and pays one G2D sync per op. backend_g2d owns
- * the whole frame: one clear, one sync, N blits, one page-flip.
+ * Surface buffer requirements:
+ *   - G2D needs either a physical DMA address or a dma-buf fd for both
+ *     src and dst. The dst here is /dev/fb0's smem_start (always phys,
+ *     read out of FBIOGET_FSCREENINFO).
+ *   - For src, mc surfaces today are usually memfd-backed (no phys, no
+ *     dma-buf). When that's the case G2D will reject the blit; we
+ *     mark_broken() and fall back to CPU memcpy per surface so things
+ *     keep working visually while you migrate clients to dma-heap /
+ *     ion allocations. mc_alloc already supports those via MC_ALLOC
+ *     env, this just isn't the default yet.
  */
 #define _GNU_SOURCE
 #include "backend.h"
 #include "surface.h"
 #include "log.h"
+#include "g2d_uapi.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -46,6 +43,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/utsname.h>
 #include <unistd.h>
 
 struct g2d_priv {
@@ -62,13 +60,25 @@ struct g2d_priv {
 
     /* g2d side. */
     int       g2d_fd;          /* /dev/g2d, -1 if not opened. */
+    int       broken;          /* 1: G2D ioctl rejected; CPU fallback only */
+    int       kernel_510_plus; /* 1: addr[0] interpreted as dma-buf fd */
 };
 
-#define DEV_G2D "/dev/g2d"
+/* ------------------------------------------------------------------ */
+/* Kernel-version probe (decides addr[0] meaning, see g2d_uapi.h).    */
+/* ------------------------------------------------------------------ */
+
+static int detect_kernel_510_plus(void)
+{
+    struct utsname u;
+    if (uname(&u) < 0) return 0;
+    int maj = 0, min = 0;
+    if (sscanf(u.release, "%d.%d", &maj, &min) != 2) return 0;
+    return (maj > 5) || (maj == 5 && min >= 10);
+}
 
 /* ------------------------------------------------------------------ */
-/* fb plumbing (lifted from backend_fb -- intentional duplication for *
- * now; consolidate after a third backend needs it).                  */
+/* fb plumbing (lifted from backend_fb).                              */
 /* ------------------------------------------------------------------ */
 
 static int g2d_open_fb(struct g2d_priv *p, const char *fbdev)
@@ -115,6 +125,58 @@ static int g2d_open_fb(struct g2d_priv *p, const char *fbdev)
 }
 
 /* ------------------------------------------------------------------ */
+/* G2D helpers                                                        */
+/* ------------------------------------------------------------------ */
+
+static void mark_broken(struct g2d_priv *p, const char *why)
+{
+    if (!p->broken) {
+        LOG_W("backend_g2d: disabling G2D (%s) -- compose falls back to "
+              "CPU memcpy per surface. Most likely cause: surfaces are "
+              "memfd_create-backed; switch the compositor to MC_ALLOC=ion "
+              "or MC_ALLOC=dma-heap so G2D can see them.", why);
+        p->broken = 1;
+    }
+}
+
+/* Resolve a surface buffer's G2D addr[0] value.
+ * Returns 0 on success, -1 if neither phys nor dma-buf fd is available
+ * (caller falls back to CPU). */
+static int surface_addr(const struct g2d_priv *p, const struct mc_buf *b,
+                        uint32_t *out_addr)
+{
+    if (p->kernel_510_plus) {
+        if (b->shm_fd >= 0) { *out_addr = (uint32_t)b->shm_fd; return 0; }
+        if (b->phys != 0)    { *out_addr = b->phys;             return 0; }
+    } else {
+        if (b->phys != 0)    { *out_addr = b->phys;             return 0; }
+    }
+    return -1;
+}
+
+static void fill_g2d_image_from_surface(g2d_image *img,
+                                        const struct mc_surface *sf,
+                                        uint32_t addr0)
+{
+    memset(img, 0, sizeof(*img));
+    img->addr[0]   = addr0;
+    img->w         = sf->w;
+    img->h         = sf->h;
+    img->format    = G2D_FMT_BGRA_VUYA8888;   /* mc surfaces are BGRA8888 */
+    img->pixel_seq = G2D_SEQ_NORMAL;
+}
+
+static void fill_g2d_image_fb(g2d_image *img, const struct g2d_priv *p)
+{
+    memset(img, 0, sizeof(*img));
+    img->addr[0]   = p->fb_phys[p->back_idx];   /* phys regardless of kernel */
+    img->w         = p->w;
+    img->h         = p->h;
+    img->format    = G2D_FMT_BGRA_VUYA8888;
+    img->pixel_seq = G2D_SEQ_NORMAL;
+}
+
+/* ------------------------------------------------------------------ */
 /* mc_backend ops                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -133,16 +195,25 @@ static int g2d_open(struct mc_backend *be, const char *arg,
     int rc = g2d_open_fb(p, arg);
     if (rc < 0) { free(p); return rc; }
 
-    p->g2d_fd = open(DEV_G2D, O_RDWR | O_CLOEXEC);
-    if (p->g2d_fd < 0) {
-        LOG_W("backend_g2d: %s not openable (%s) -- compose will run on "
-              "CPU until G2D is available", DEV_G2D, strerror(errno));
-        /* Non-fatal for the skeleton: we still want the backend to come
-         * up so the rest of the stack is exercised on T113. Real HW
-         * compose code can fail open here once it's wired. */
-    } else {
-        LOG_I("backend_g2d: opened %s", DEV_G2D);
+    if (!p->fb_phys[0]) {
+        LOG_W("backend_g2d: fb has no smem_start; G2D needs a phys dst "
+              "address. Falling back to CPU compose only.");
+        p->broken = 1;
     }
+
+    p->g2d_fd = open(MC_G2D_DEV_PATH, O_RDWR | O_CLOEXEC);
+    if (p->g2d_fd < 0) {
+        LOG_W("backend_g2d: %s not openable (%s) -- compose runs on CPU",
+              MC_G2D_DEV_PATH, strerror(errno));
+        p->broken = 1;
+    } else {
+        LOG_I("backend_g2d: opened %s (1.0 ABI: BITBLT=0x%02x FILLRECT=0x%02x)",
+              MC_G2D_DEV_PATH, G2D_CMD_BITBLT, G2D_CMD_FILLRECT);
+    }
+
+    p->kernel_510_plus = detect_kernel_510_plus();
+    LOG_I("backend_g2d: kernel addr[0] mode: %s",
+          p->kernel_510_plus ? "dma-buf fd (5.10+)" : "phys addr (<= 5.4)");
 
     *out_w      = p->w;
     *out_h      = p->h;
@@ -153,9 +224,8 @@ static int g2d_open(struct mc_backend *be, const char *arg,
 
 static uint8_t *g2d_get_buffer(struct mc_backend *be)
 {
-    /* Exposed so the begin/draw/end skeleton can keep using the CPU
-     * compose path as a fallback. Once G2D blits are wired, the
-     * compose ops never need this and callers may pass NULL. */
+    /* hw_compose path doesn't call this, but expose the CPU mapping so
+     * the per-surface CPU fallback in draw_surface() can write to it. */
     struct g2d_priv *p = be->priv;
     return p ? p->fb_buf[p->back_idx] : NULL;
 }
@@ -192,35 +262,122 @@ static void g2d_close(struct mc_backend *be)
 }
 
 /* ------------------------------------------------------------------ */
-/* hw_compose ops -- skeleton (CPU fallback)                          */
+/* hw_compose ops                                                     */
 /* ------------------------------------------------------------------ */
 
-static void g2d_begin_frame(struct mc_backend *be)
+static void g2d_clear_cpu(struct g2d_priv *p)
 {
-    /* TODO: G2D_CMD_FILLRECT_H to clear fb_phys[back_idx] to black.
-     * For now, CPU memset (same effect, far slower). */
-    struct g2d_priv *p = be->priv;
-    if (!p) return;
     uint8_t *back = p->fb_buf[p->back_idx];
     if (back) memset(back, 0, p->stride * p->h);
 }
 
+static void g2d_begin_frame(struct mc_backend *be)
+{
+    struct g2d_priv *p = be->priv;
+    if (!p) return;
+
+    if (p->broken || p->g2d_fd < 0) {
+        g2d_clear_cpu(p);
+        return;
+    }
+
+    /* G2D FILLRECT: clear the whole fb back-buffer to opaque black. */
+    g2d_fillrect fr;
+    memset(&fr, 0, sizeof(fr));
+    fr.flag        = G2D_FIL_NONE;        /* solid fill, no alpha mode */
+    fr.color       = 0xff000000u;         /* ARGB: opaque black        */
+    fr.alpha       = 0xff;
+    fr.dst_rect.x  = 0;
+    fr.dst_rect.y  = 0;
+    fr.dst_rect.w  = p->w;
+    fr.dst_rect.h  = p->h;
+    fill_g2d_image_fb(&fr.dst_image, p);
+
+    if (ioctl(p->g2d_fd, G2D_CMD_FILLRECT, &fr) < 0) {
+        LOG_W("backend_g2d: FILLRECT failed: %s", strerror(errno));
+        mark_broken(p, "FILLRECT ioctl failed");
+        g2d_clear_cpu(p);
+    }
+}
+
+/* CPU per-surface blit fallback. Mirrors the simplest path in
+ * accel_cpu.c so something is on screen even when G2D can't see the
+ * client buffer. */
+static void draw_surface_cpu(struct g2d_priv *p, struct mc_surface *sf,
+                             const struct mc_buf *b)
+{
+    if (!b->map) return;
+    uint8_t *dst_base = p->fb_buf[p->back_idx];
+    if (!dst_base) return;
+
+    int sx = 0, sy = 0;
+    int dx = sf->x, dy = sf->y;
+    int w  = sf->w, h = sf->h;
+    /* clip to screen */
+    if (dx < 0)              { sx -= dx; w += dx; dx = 0; }
+    if (dy < 0)              { sy -= dy; h += dy; dy = 0; }
+    if (dx + w > p->w)         w = p->w - dx;
+    if (dy + h > p->h)         h = p->h - dy;
+    if (w <= 0 || h <= 0)    return;
+
+    const uint8_t *src = b->map + sy * sf->stride + sx * 4;
+    uint8_t       *dst = dst_base + dy * p->stride + dx * 4;
+    for (int row = 0; row < h; row++) {
+        memcpy(dst, src, (size_t)w * 4);
+        src += sf->stride;
+        dst += p->stride;
+    }
+}
+
 static void g2d_draw_surface(struct mc_backend *be, struct mc_surface *sf)
 {
-    /* TODO: G2D_CMD_BITBLT_H (opaque, FULLSCREEN role) or G2D_CMD_BLD_H
-     * (alpha, popups) from sf's dma-buf fd at sf->bufs[idx].fd into
-     * fb_phys[back_idx]. The ABI for both lives in accel_g2d.c; share it.
-     *
-     * Skeleton: CPU per-pixel blit into the mapped back-buffer so the
-     * stack runs end-to-end on T113 even before G2D is wired. */
-    (void)be; (void)sf;
-    LOG_D("backend_g2d: draw_surface sid=%u (CPU fallback, TODO: g2d blit)",
-          sf ? sf->sid : 0);
+    struct g2d_priv *p = be->priv;
+    if (!p || !sf) return;
+
+    int idx = (sf->pending_idx >= 0) ? sf->pending_idx : sf->cur_scanout;
+    if (idx < 0) return;
+    const struct mc_buf *b = &sf->bufs[idx];
+
+    /* G2D path. Requires a HW-visible src buffer (phys or dma-buf fd). */
+    if (!p->broken && p->g2d_fd >= 0) {
+        uint32_t src_addr;
+        if (surface_addr(p, b, &src_addr) == 0) {
+            g2d_blt blt;
+            memset(&blt, 0, sizeof(blt));
+            /* Role 1 == FULLSCREEN: assume opaque, plain copy.
+             * Role 2 == POPUP (and bg): blend per-pixel alpha. */
+            int opaque = (sf->role == 1 /* FULLSCREEN */);
+            blt.flag  = opaque ? G2D_BLT_NONE : G2D_BLT_PIXEL_ALPHA;
+            blt.alpha = 0xff;
+
+            fill_g2d_image_from_surface(&blt.src_image, sf, src_addr);
+            blt.src_rect.x = 0;
+            blt.src_rect.y = 0;
+            blt.src_rect.w = sf->w;
+            blt.src_rect.h = sf->h;
+
+            fill_g2d_image_fb(&blt.dst_image, p);
+            blt.dst_x = sf->x;
+            blt.dst_y = sf->y;
+
+            if (ioctl(p->g2d_fd, G2D_CMD_BITBLT, &blt) == 0) {
+                return;   /* HW path succeeded */
+            }
+            LOG_W("backend_g2d: BITBLT failed: %s (sid=%u %dx%d@%d,%d)",
+                  strerror(errno), sf->sid, sf->w, sf->h, sf->x, sf->y);
+            mark_broken(p, "BITBLT ioctl failed");
+        }
+    }
+
+    /* CPU fallback. */
+    draw_surface_cpu(p, sf, b);
 }
 
 static void g2d_end_frame(struct mc_backend *be)
 {
-    /* TODO: single G2D SYNC ioctl here, then present() page-flips. */
+    /* G2D 1.0 BITBLT / FILLRECT are synchronous: the driver waits
+     * internally (see g2d_wait_cmd_finish() in the BSP). No per-frame
+     * sync ioctl needed. present() page-flips. */
     (void)be;
 }
 

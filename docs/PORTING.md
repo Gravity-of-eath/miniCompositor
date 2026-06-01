@@ -131,9 +131,10 @@ T113 has no Mali GPU but does have a 2D engine (G2D). The plan:
 
 | Concern | T113 choice |
 |---|---|
-| Compose | `--backend g2d` (`compositor/backend_g2d.c`). Allwinner G2D blits each client dma-buf into fb back-buffer, one fb page-flip per frame. Skeleton in place; G2D ioctls TODO (currently CPU memset/memcpy fallback so the stack runs end-to-end). |
-| Client→fb accel | `accel_g2d.c` ABI is already correct (BSP `g2d_driver.h`); used by backend_g2d when wired. |
-| Allocator | Likely sunxi-ION old ABI — already handled in `mc_alloc.c`. Probe-test before assuming. |
+| Compose | `--backend g2d` (`compositor/backend_g2d.c`). Allwinner G2D blits each client surface into fb back-buffer; FILLRECT clears, BITBLT draws (`G2D_BLT_PIXEL_ALPHA` for popups). Implemented using G2D **1.0 ABI** (`G2D_CMD_BITBLT=0x50`, `G2D_CMD_FILLRECT=0x51`) — verified against `deps_source/T113/sunxi_g2d-main/` BSP source. T113 is NOT in `G2D_V2X_SUPPORT` so the `_H` series (0x55+ used by T507) doesn't apply. |
+| Client→fb accel | `accel_g2d.c` uses the 2.0 `_H` ABI (T507 path). `backend_g2d.c` uses the 1.0 ABI. Both ioctl number sets live in `compositor/g2d_uapi.h`. |
+| Surface backing | G2D needs phys or dma-buf fd, NOT memfd. Use `MC_ALLOC=ion` (T113 4.9/5.4 kernels) or `MC_ALLOC=dma-heap` (5.10+) so client surfaces are HW-visible. Default `MC_ALLOC=memfd` makes backend_g2d fall back to CPU per surface (still works, just slow). |
+| Kernel addr[0] semantics | G2D 1.0 `g2d_image.addr[0]` is a phys addr on kernels ≤5.4, dma-buf fd on ≥5.10. `backend_g2d.c` probes via `uname()` at open time. |
 | LVGL | Same source. Has its own `lv_conf.h` under `deps_libs/T113/lvgl/` (start from T507's, adjust LCD/cache). |
 | AWTK | No GPU → no `egl_devices/mc`. Need a `LCD_DEVICES=mc_fb` backend that maps a mc dma-buf as a CPU bitmap and uses AWTK's software canvas (NANOVG software backend or AGGE). Build skipped by default (`SKIP_AWTK=1` in `build.sh T113`). |
 | tslib | T113 build of tslib + plugins, dropped under `deps_libs/T113/tslib/`. |
