@@ -372,11 +372,8 @@ static void g2d_draw_surface(struct mc_backend *be, struct mc_surface *sf)
         return;
     }
 
-    /* G2D path: BITBLT_H from the client dma-buf into our back-buffer. */
+    /* G2D path. */
     if (b->shm_fd >= 0) {
-        g2d_blt_h blt;
-        memset(&blt, 0, sizeof(blt));
-
         /* Flush the client-written source out of CPU cache before G2D
          * (DMA via the IOMMU) reads it. On T113 (Cortex-A7, PIPT D-cache)
          * the sunxi-ion dma_buf_map_attachment(DMA_TO_DEVICE) does NOT
@@ -386,15 +383,37 @@ static void g2d_draw_surface(struct mc_backend *be, struct mc_surface *sf)
          * reference (commit "背景图片会出现横向随机白色线条问题"). */
         g2d_cache_flush(p, b->map, b->size, b->shm_fd);
 
-        blt.flag_h = G2D_BLT_NONE_H;               /* mixer blit */
-        fill_img_surface(&blt.src_image_h, sf, b);
-        fill_img_back(p, &blt.dst_image_h, sf->x, sf->y, sf->w, sf->h);
+        /* Fullscreen (role 1) is opaque and sits on the freshly-cleared
+         * back-buffer, so a plain copy (BITBLT_H) is correct and cheapest.
+         * Anything layered on top (popups) must alpha-blend over what's
+         * already there, or its transparent / rounded-corner pixels would
+         * overwrite the fullscreen content underneath -- use BLD_H SRCOVER
+         * with the back-buffer as the bottom layer (== dst), like the
+         * reference's g2d_tina_blend_image(). */
+        int ret;
+        if (sf->role == 1 /* FULLSCREEN */) {
+            g2d_blt_h blt;
+            memset(&blt, 0, sizeof(blt));
+            blt.flag_h = G2D_BLT_NONE_H;           /* mixer blit (copy) */
+            fill_img_surface(&blt.src_image_h, sf, b);
+            fill_img_back(p, &blt.dst_image_h, sf->x, sf->y, sf->w, sf->h);
+            ret = ioctl(p->g2d_fd, G2D_CMD_BITBLT_H, &blt);
+        } else {
+            g2d_bld bld;
+            memset(&bld, 0, sizeof(bld));
+            bld.bld_cmd = G2D_BLD_SRCOVER;         /* src over dst */
+            fill_img_back(p, &bld.dst_image, sf->x, sf->y, sf->w, sf->h);
+            bld.src_image[0] = bld.dst_image;      /* bottom = current back-buffer */
+            fill_img_surface(&bld.src_image[1], sf, b);  /* top, per-pixel alpha */
+            ret = ioctl(p->g2d_fd, G2D_CMD_BLD_H, &bld);
+        }
 
-        if (ioctl(p->g2d_fd, G2D_CMD_BITBLT_H, &blt) == 0)
+        if (ret == 0)
             return;
-        LOG_W("backend_g2d: BITBLT_H failed: %s (sid=%u %dx%d@%d,%d)",
-              strerror(errno), sf->sid, sf->w, sf->h, sf->x, sf->y);
-        mark_broken(p, "BITBLT_H ioctl failed");
+        LOG_W("backend_g2d: %s failed: %s (sid=%u role=%u %dx%d@%d,%d)",
+              sf->role == 1 ? "BITBLT_H" : "BLD_H", strerror(errno),
+              sf->sid, sf->role, sf->w, sf->h, sf->x, sf->y);
+        mark_broken(p, "G2D ioctl failed");
     }
 
     /* Fell through: CPU blit straight into the fb (we've given up on G2D). */
