@@ -7,7 +7,8 @@
 #
 # Supported PLATFORM:
 #   T507   Allwinner T507 (aarch64, Mali-G31). Default.
-#   T113   Allwinner T113 (armv7-musl, no GPU, G2D 2D engine). Skeleton.
+#   T113   Allwinner T113 (armv7-musl, no GPU, G2D 2D engine via backend_g2d).
+#          LVGL/AWTK not ported yet -> packages compositor + tools only.
 #
 # Outputs:
 #   output/<PLATFORM>/staging/        full unpacked tree, ready to scp/adb push
@@ -26,6 +27,10 @@
 #   SKIP_AWTK=1  skip the AWTK scons build (much slower than mc itself).
 #                For T113 this defaults to 1 until an AWTK fb_devices/mc
 #                port exists under deps_source/T113/awtk/.
+#   SKIP_LVGL=1  skip the LVGL demos. Auto-on when the platform has no
+#                prebuilt deps_libs/<PLATFORM>/lvgl/liblvgl9.a (e.g. T113,
+#                whose LVGL port isn't in the tree yet). Override =0 once
+#                that lib is built.
 
 set -e
 set -o pipefail
@@ -74,6 +79,21 @@ T113)
     ;;
 esac
 
+# LVGL demos need liblvgl9.a for the platform. T507 ships a prebuilt one;
+# T113 builds it on demand (below) from the shared v9.0 source + its own
+# lv_conf.h. Only skip the demos when we have neither the lib nor the means
+# to build it -- otherwise `make demos` would abort the package under `set -e`.
+# Honour an explicit SKIP_LVGL if given.
+if [[ -z "${SKIP_LVGL:-}" ]]; then
+    if [[ -f "deps_libs/$PLATFORM/lvgl/liblvgl9.a" ]] || \
+       { [[ -d "deps_source/$PLATFORM/lvgl-release-v9.0/src" ]] && \
+         [[ -f "deps_libs/$PLATFORM/lvgl/lv_conf.h" ]]; }; then
+        SKIP_LVGL=0
+    else
+        SKIP_LVGL=1
+    fi
+fi
+
 # ---------- helpers ----------------------------------------------------
 
 log()  { printf '\033[1;34m[build]\033[0m %s\n' "$*"; }
@@ -121,15 +141,30 @@ esac
 log "building mc compositor + tools (Makefile)"
 run make "${MAKE_PLATFORM_FLAGS[@]}" -j"$JOBS"
 
-log "building LVGL demos"
-run make "${MAKE_PLATFORM_FLAGS[@]}" demos -j"$JOBS"
+if [[ "$SKIP_LVGL" == "1" ]]; then
+    warn "SKIP_LVGL=1 -- no LVGL lib or source for $PLATFORM, skipping LVGL demos"
+else
+    LVGL_LIB="deps_libs/$PLATFORM/lvgl/liblvgl9.a"
+    if [[ ! -f "$LVGL_LIB" ]]; then
+        # T507 commits a prebuilt lib; T113 builds it here from the shared
+        # v9.0 source. Pass CC/AR on the command line (command-line origin
+        # beats the Makefile's default) so the cross compiler is really used
+        # -- a plain `?=` would silently fall back to the host gcc.
+        log "building LVGL static lib for $PLATFORM (one-time, ~280 files)"
+        run make -C "deps_libs/$PLATFORM/lvgl" CC="$CC" AR="${AR:-${CROSS_COMPILE:-}ar}" -j"$JOBS"
+    fi
+    log "building LVGL demos"
+    run make "${MAKE_PLATFORM_FLAGS[@]}" demos -j"$JOBS"
+fi
 
 cp -v build/mc-compositor   "$STAGE/bin/"
 cp -v build/mc-fill-client  "$STAGE/bin/"
 cp -v build/mc-bus-tool     "$STAGE/bin/"
 cp -v build/mc-launcher     "$STAGE/bin/"
-cp -v build/demo-fullscreen "$STAGE/bin/"
-cp -v build/demo-popup      "$STAGE/bin/"
+if [[ "$SKIP_LVGL" != "1" ]]; then
+    cp -v build/demo-fullscreen "$STAGE/bin/"
+    cp -v build/demo-popup      "$STAGE/bin/"
+fi
 
 # ---------- 2. AWTK (optional) -----------------------------------------
 
@@ -150,9 +185,9 @@ fi
 
 # ---------- 3. tslib runtime (needed by AWTK demo1) --------------------
 
-log "copying tslib runtime (libts + plugins, aarch64)"
+log "copying tslib runtime (libts + plugins)"
 TSLIB_SRC="deps_libs/$PLATFORM/tslib/lib"
-if [[ -d "$TSLIB_SRC" ]]; then
+if [[ -f "$TSLIB_SRC/libts-1.3.so.0.1.3" ]]; then
     cp -v "$TSLIB_SRC"/libts-1.3.so.0.1.3 "$STAGE/lib/"
     (cd "$STAGE/lib" && ln -sf libts-1.3.so.0.1.3 libts-1.3.so.0)
     mkdir -p "$STAGE/lib/ts"
@@ -241,21 +276,25 @@ if [ -x "\$HERE/bin/awtk-demo1" ]; then
     sleep 3
 fi
 
-# 3. LVGL fullscreen demos
-setsid sh -c "\$HERE/bin/demo-fullscreen --socket /tmp/mc.sock \\
-    --name dashboard --bg 0xFF205080 \\
-    > /tmp/mc-dashboard.log 2>&1" </dev/null >/dev/null 2>&1 &
-sleep 2
-setsid sh -c "\$HERE/bin/demo-fullscreen --socket /tmp/mc.sock \\
-    --name diagnostics --bg 0xFFB02040 \\
-    > /tmp/mc-diagnostics.log 2>&1" </dev/null >/dev/null 2>&1 &
-sleep 2
+# 3. LVGL fullscreen demos (only if packaged -- not present on T113 yet)
+if [ -x "\$HERE/bin/demo-fullscreen" ]; then
+    setsid sh -c "\$HERE/bin/demo-fullscreen --socket /tmp/mc.sock \\
+        --name dashboard --bg 0xFF205080 \\
+        > /tmp/mc-dashboard.log 2>&1" </dev/null >/dev/null 2>&1 &
+    sleep 2
+    setsid sh -c "\$HERE/bin/demo-fullscreen --socket /tmp/mc.sock \\
+        --name diagnostics --bg 0xFFB02040 \\
+        > /tmp/mc-diagnostics.log 2>&1" </dev/null >/dev/null 2>&1 &
+    sleep 2
+fi
 
 # 4. LVGL popup overlay
-setsid sh -c "\$HERE/bin/demo-popup --socket /tmp/mc.sock \\
-    --x 300 --y 150 --w 400 --h 240 \\
-    > /tmp/mc-popup.log 2>&1" </dev/null >/dev/null 2>&1 &
-sleep 2
+if [ -x "\$HERE/bin/demo-popup" ]; then
+    setsid sh -c "\$HERE/bin/demo-popup --socket /tmp/mc.sock \\
+        --x 300 --y 150 --w 400 --h 240 \\
+        > /tmp/mc-popup.log 2>&1" </dev/null >/dev/null 2>&1 &
+    sleep 2
+fi
 
 echo "started. logs in /tmp/mc-*.log"
 ps | grep -E "mc-comp|demo-|awtk-demo1" | grep -v grep | grep -v "sh -c"
