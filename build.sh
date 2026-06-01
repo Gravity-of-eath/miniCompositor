@@ -127,12 +127,15 @@ T113)
     log "using T113 cross prefix: ${T113_TOOLCHAIN}"
     export CC="${T113_TOOLCHAIN}gcc"
     export AR="${T113_TOOLCHAIN}ar"
-    # T113: no Mali (EGL=0), G2D engine on (auto-detected by sun8iw
-    # marker in SDKTARGETSYSROOT but T113 toolchain doesn't set it,
-    # so flip the flags explicitly).
+    # T113: no Mali (EGL=0). NOTE: MC_ENABLE_G2D builds accel_g2d.c, which
+    # is the 2.0 "_H" ABI accelerator (T507). T113 (sun8iw20) only has the
+    # G2D 1.0 ABI, so issuing a 2.0 ioctl there HANGS the compositor
+    # (client then dies with "wait_buf_free stalled"). Keep it OFF and use
+    # the 1.0 path in backend_g2d.c (MC_ENABLE_BACKEND_G2D) via `-b g2d`;
+    # the default fb backend falls back to CPU accel.
     MAKE_PLATFORM_FLAGS=( CROSS=1
                           MC_ENABLE_EGL=0
-                          MC_ENABLE_G2D=1
+                          MC_ENABLE_G2D=0
                           MC_ENABLE_BACKEND_G2D=1
                           LVGL_PLATFORM=T113 )
     ;;
