@@ -1,38 +1,34 @@
 /*
- * G2D compositor backend (Allwinner sun8iw / T113 primarily; will also
- * run on T507 if you prefer G2D over Mali EGL for some reason).
+ * G2D compositor backend for Allwinner T113 (sun8iw20).
  *
- * Same model as backend_egl, but using the /dev/g2d 2D engine instead
- * of Mali. compose.c walks visible surfaces bottom-up and calls our
- * hw_compose ops; each draw_surface() is one G2D BITBLT. begin_frame
- * clears the back buffer via G2D FILLRECT. present() page-flips the
- * fb the same way backend_fb does.
+ * T113's G2D is the *RCQ* driver and exposes ONLY the enhanced ("_H")
+ * ABI (g2d_image_enh + G2D_CMD_BITBLT_H/FILLRECT_H/BLD_H); there is no
+ * 1.0 BITBLT(0x50)/FILLRECT(0x51). It also has a G2D IOMMU, so buffers
+ * are handed over as dma-buf fds (image.fd, use_phy_addr=0) -- no
+ * physical address required. See compositor/g2d_uapi.h for the full
+ * story (this replaced an earlier, wrong, 1.0/phys implementation that
+ * was transcribed from the T5 PDF).
  *
- * G2D 1.0 vs 2.0 ABI:
- *   - T113 (sun8iw20) is NOT in the G2D_V2X_SUPPORT list (verified in
- *     deps_source/T113/sunxi_g2d-main/g2d_driver_i.h), so it only
- *     accepts the 1.0 ioctls: G2D_CMD_BITBLT (0x50) / G2D_CMD_FILLRECT
- *     (0x51). The 2.0 _H series (0x55+) returns -EINVAL.
- *   - This backend currently targets 1.0 only. T507 builds normally
- *     use backend_egl; if you ever want backend_g2d on T507 too, the
- *     ioctl numbers happen to coexist in the same driver so adding a
- *     2.0 code path is a follow-up, not a rewrite.
+ * Display path (B1): /dev/fb0 on T113 exposes no smem_start, so G2D
+ * cannot target it directly. We allocate our own dma-buf back-buffer
+ * (via mc_alloc -> ion/dma-heap), let G2D composite every surface into
+ * it, then DMA-BUF-sync + memcpy that buffer into the fb on present and
+ * page-flip. The expensive per-surface blit/blend runs on G2D; only one
+ * linear copy per frame stays on the CPU.
  *
- * Surface buffer requirements:
- *   - G2D needs either a physical DMA address or a dma-buf fd for both
- *     src and dst. The dst here is /dev/fb0's smem_start (always phys,
- *     read out of FBIOGET_FSCREENINFO).
- *   - For src, mc surfaces today are usually memfd-backed (no phys, no
- *     dma-buf). When that's the case G2D will reject the blit; we
- *     mark_broken() and fall back to CPU memcpy per surface so things
- *     keep working visually while you migrate clients to dma-heap /
- *     ion allocations. mc_alloc already supports those via MC_ALLOC
- *     env, this just isn't the default yet.
+ *   begin_frame  -> G2D_CMD_FILLRECT_H clears the dma-buf back-buffer.
+ *   draw_surface -> G2D_CMD_BITBLT_H copies one client dma-buf into it.
+ *   present      -> dma-buf sync + memcpy back-buffer -> fb, FBIOPAN.
+ *
+ * If G2D or a real dma-buf allocator is unavailable, `broken` is set and
+ * everything falls back to plain CPU memcpy into the fb back-buffer, so
+ * the stack still renders (just without HW accel).
  */
 #define _GNU_SOURCE
 #include "backend.h"
 #include "surface.h"
 #include "log.h"
+#include "mc_alloc.h"
 #include "g2d_uapi.h"
 
 #include <errno.h>
@@ -43,11 +39,21 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/utsname.h>
 #include <unistd.h>
 
+/* dma-buf CPU-access sync (cache maintenance). Define locally so we don't
+ * depend on <linux/dma-buf.h> being in the sysroot. */
+#ifndef DMA_BUF_IOCTL_SYNC
+struct dma_buf_sync { uint64_t flags; };
+#define DMA_BUF_SYNC_READ  (1 << 0)
+#define DMA_BUF_SYNC_WRITE (2 << 0)
+#define DMA_BUF_SYNC_START (0 << 2)
+#define DMA_BUF_SYNC_END   (1 << 2)
+#define DMA_BUF_IOCTL_SYNC _IOW('b', 0, struct dma_buf_sync)
+#endif
+
 struct g2d_priv {
-    /* fb side -- mirrors backend_fb. */
+    /* fb (final scanout target). */
     int       fb_fd;
     uint8_t  *fb_map;
     size_t    fb_map_size;
@@ -56,29 +62,17 @@ struct g2d_priv {
     int       double_buf;
     int       back_idx;
     uint8_t  *fb_buf[2];
-    uint32_t  fb_phys[2];
 
-    /* g2d side. */
-    int       g2d_fd;          /* /dev/g2d, -1 if not opened. */
-    int       broken;          /* 1: G2D ioctl rejected; CPU fallback only */
-    int       kernel_510_plus; /* 1: addr[0] interpreted as dma-buf fd */
+    /* g2d. */
+    int       g2d_fd;
+    int       broken;          /* 1: CPU fallback only */
+
+    /* dma-buf compose target (G2D writes here, we memcpy to fb). */
+    struct mc_alloc_buf back;  /* .fd dma-buf, .map CPU view, .size */
 };
 
 /* ------------------------------------------------------------------ */
-/* Kernel-version probe (decides addr[0] meaning, see g2d_uapi.h).    */
-/* ------------------------------------------------------------------ */
-
-static int detect_kernel_510_plus(void)
-{
-    struct utsname u;
-    if (uname(&u) < 0) return 0;
-    int maj = 0, min = 0;
-    if (sscanf(u.release, "%d.%d", &maj, &min) != 2) return 0;
-    return (maj > 5) || (maj == 5 && min >= 10);
-}
-
-/* ------------------------------------------------------------------ */
-/* fb plumbing (lifted from backend_fb).                              */
+/* fb plumbing                                                        */
 /* ------------------------------------------------------------------ */
 
 static int g2d_open_fb(struct g2d_priv *p, const char *fbdev)
@@ -99,11 +93,11 @@ static int g2d_open_fb(struct g2d_priv *p, const char *fbdev)
         LOG_E("backend_g2d: fb is %dbpp (need 32)", vinfo.bits_per_pixel);
         return -ENOTSUP;
     }
-    p->w          = vinfo.xres;
-    p->h          = vinfo.yres;
-    p->stride     = finfo.line_length;
-    p->double_buf = (vinfo.yres_virtual >= 2 * vinfo.yres) ? 1 : 0;
-    p->fb_map_size = p->stride * (p->double_buf ? 2 : 1) * p->h;
+    p->w           = vinfo.xres;
+    p->h           = vinfo.yres;
+    p->stride      = finfo.line_length;
+    p->double_buf  = (vinfo.yres_virtual >= 2 * vinfo.yres) ? 1 : 0;
+    p->fb_map_size = (size_t)p->stride * (p->double_buf ? 2 : 1) * p->h;
     p->fb_map = mmap(NULL, p->fb_map_size, PROT_READ | PROT_WRITE,
                      MAP_SHARED, p->fb_fd, 0);
     if (p->fb_map == MAP_FAILED) {
@@ -111,16 +105,10 @@ static int g2d_open_fb(struct g2d_priv *p, const char *fbdev)
         return -errno;
     }
     p->fb_buf[0] = p->fb_map;
-    p->fb_buf[1] = p->fb_map + (p->double_buf ? p->stride * p->h : 0);
+    p->fb_buf[1] = p->fb_map + (p->double_buf ? (size_t)p->stride * p->h : 0);
     p->back_idx  = p->double_buf ? 1 : 0;
-    if (finfo.smem_start) {
-        p->fb_phys[0] = (uint32_t)finfo.smem_start;
-        p->fb_phys[1] = (uint32_t)finfo.smem_start
-                      + (p->double_buf ? p->stride * p->h : 0);
-    }
-    LOG_I("backend_g2d: fb %s %dx%d stride=%d double=%d phys=0x%x/0x%x",
-          fbdev, p->w, p->h, p->stride, p->double_buf,
-          p->fb_phys[0], p->fb_phys[1]);
+    LOG_I("backend_g2d: fb %s %dx%d stride=%d double=%d",
+          fbdev, p->w, p->h, p->stride, p->double_buf);
     return 0;
 }
 
@@ -132,48 +120,51 @@ static void mark_broken(struct g2d_priv *p, const char *why)
 {
     if (!p->broken) {
         LOG_W("backend_g2d: disabling G2D (%s) -- compose falls back to "
-              "CPU memcpy per surface. Most likely cause: surfaces are "
-              "memfd_create-backed; switch the compositor to MC_ALLOC=ion "
-              "or MC_ALLOC=dma-heap so G2D can see them.", why);
+              "CPU memcpy per surface.", why);
         p->broken = 1;
     }
 }
 
-/* Resolve a surface buffer's G2D addr[0] value.
- * Returns 0 on success, -1 if neither phys nor dma-buf fd is available
- * (caller falls back to CPU). */
-static int surface_addr(const struct g2d_priv *p, const struct mc_buf *b,
-                        uint32_t *out_addr)
-{
-    if (p->kernel_510_plus) {
-        if (b->shm_fd >= 0) { *out_addr = (uint32_t)b->shm_fd; return 0; }
-        if (b->phys != 0)    { *out_addr = b->phys;             return 0; }
-    } else {
-        if (b->phys != 0)    { *out_addr = b->phys;             return 0; }
-    }
-    return -1;
-}
-
-static void fill_g2d_image_from_surface(g2d_image *img,
-                                        const struct mc_surface *sf,
-                                        uint32_t addr0)
+/* Fill a g2d_image_enh for an mc surface buffer (dma-buf fd path). */
+static void fill_img_surface(g2d_image_enh *img, const struct mc_surface *sf,
+                             const struct mc_buf *b)
 {
     memset(img, 0, sizeof(*img));
-    img->addr[0]   = addr0;
-    img->w         = sf->w;
-    img->h         = sf->h;
-    img->format    = G2D_FMT_BGRA_VUYA8888;   /* mc surfaces are BGRA8888 */
-    img->pixel_seq = G2D_SEQ_NORMAL;
+    img->fd           = b->shm_fd;
+    img->use_phy_addr = 0;
+    img->format       = G2D_FORMAT_BGRA8888;
+    img->width        = sf->w;
+    img->height       = sf->h;
+    img->clip_rect.x  = 0;
+    img->clip_rect.y  = 0;
+    img->clip_rect.w  = sf->w;
+    img->clip_rect.h  = sf->h;
+    img->alpha        = 0xff;
+    img->mode         = G2D_PIXEL_ALPHA;   /* honour client per-pixel alpha */
 }
 
-static void fill_g2d_image_fb(g2d_image *img, const struct g2d_priv *p)
+/* Fill a g2d_image_enh for our dma-buf back-buffer, operating on `r`. */
+static void fill_img_back(struct g2d_priv *p, g2d_image_enh *img,
+                          int x, int y, int w, int h)
 {
     memset(img, 0, sizeof(*img));
-    img->addr[0]   = p->fb_phys[p->back_idx];   /* phys regardless of kernel */
-    img->w         = p->w;
-    img->h         = p->h;
-    img->format    = G2D_FMT_BGRA_VUYA8888;
-    img->pixel_seq = G2D_SEQ_NORMAL;
+    img->fd           = p->back.fd;
+    img->use_phy_addr = 0;
+    img->format       = G2D_FORMAT_BGRA8888;
+    img->width        = p->w;
+    img->height       = p->h;
+    img->clip_rect.x  = x;
+    img->clip_rect.y  = y;
+    img->clip_rect.w  = w;
+    img->clip_rect.h  = h;
+    img->alpha        = 0xff;
+    img->mode         = G2D_GLOBAL_ALPHA;
+}
+
+static void dmabuf_sync(int fd, uint64_t flags)
+{
+    struct dma_buf_sync s = { .flags = flags };
+    (void)ioctl(fd, DMA_BUF_IOCTL_SYNC, &s);   /* best effort */
 }
 
 /* ------------------------------------------------------------------ */
@@ -195,25 +186,32 @@ static int g2d_open(struct mc_backend *be, const char *arg,
     int rc = g2d_open_fb(p, arg);
     if (rc < 0) { free(p); return rc; }
 
-    if (!p->fb_phys[0]) {
-        LOG_W("backend_g2d: fb has no smem_start; G2D needs a phys dst "
-              "address. Falling back to CPU compose only.");
-        p->broken = 1;
-    }
-
     p->g2d_fd = open(MC_G2D_DEV_PATH, O_RDWR | O_CLOEXEC);
     if (p->g2d_fd < 0) {
         LOG_W("backend_g2d: %s not openable (%s) -- compose runs on CPU",
               MC_G2D_DEV_PATH, strerror(errno));
         p->broken = 1;
-    } else {
-        LOG_I("backend_g2d: opened %s (1.0 ABI: BITBLT=0x%02x FILLRECT=0x%02x)",
-              MC_G2D_DEV_PATH, G2D_CMD_BITBLT, G2D_CMD_FILLRECT);
     }
 
-    p->kernel_510_plus = detect_kernel_510_plus();
-    LOG_I("backend_g2d: kernel addr[0] mode: %s",
-          p->kernel_510_plus ? "dma-buf fd (5.10+)" : "phys addr (<= 5.4)");
+    /* dma-buf back-buffer that G2D composites into. Same size/stride as
+     * the fb so the present memcpy is a straight linear copy. */
+    if (!p->broken) {
+        if (mc_alloc_create(&p->back, (size_t)p->stride * p->h) < 0) {
+            LOG_W("backend_g2d: back-buffer alloc failed -- CPU fallback");
+            p->broken = 1;
+        } else if (!mc_alloc_is_dmabuf() || p->back.map == NULL) {
+            LOG_W("backend_g2d: allocator '%s' is not dma-buf backed -- "
+                  "G2D can't target it; CPU fallback",
+                  mc_alloc_backend_name());
+            mc_alloc_destroy(&p->back);
+            memset(&p->back, 0, sizeof(p->back));
+            p->broken = 1;
+        } else {
+            LOG_I("backend_g2d: G2D enabled (_H ABI, dma-buf fd via IOMMU); "
+                  "compose target fd=%d alloc=%s",
+                  p->back.fd, mc_alloc_backend_name());
+        }
+    }
 
     *out_w      = p->w;
     *out_h      = p->h;
@@ -224,28 +222,36 @@ static int g2d_open(struct mc_backend *be, const char *arg,
 
 static uint8_t *g2d_get_buffer(struct mc_backend *be)
 {
-    /* hw_compose path doesn't call this, but expose the CPU mapping so
-     * the per-surface CPU fallback in draw_surface() can write to it. */
     struct g2d_priv *p = be->priv;
-    return p ? p->fb_buf[p->back_idx] : NULL;
+    if (!p) return NULL;
+    /* CPU fallback composes straight into the fb back-buffer. */
+    return p->broken ? p->fb_buf[p->back_idx] : (uint8_t *)p->back.map;
 }
 
 static uint32_t g2d_get_buffer_phys(struct mc_backend *be)
 {
     struct g2d_priv *p = be->priv;
-    return p ? p->fb_phys[p->back_idx] : 0;
+    return (p && !p->broken) ? p->back.phys : 0;
 }
 
 static int g2d_present(struct mc_backend *be)
 {
     struct g2d_priv *p = be->priv;
-    if (!p || !p->double_buf) return 0;
+    if (!p) return 0;
+
+    /* HW path: pull G2D's output out of the dma-buf and into the fb. */
+    if (!p->broken) {
+        dmabuf_sync(p->back.fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ);
+        memcpy(p->fb_buf[p->back_idx], p->back.map, (size_t)p->stride * p->h);
+        dmabuf_sync(p->back.fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ);
+    }
+
+    if (!p->double_buf) return 0;
     struct fb_var_screeninfo vinfo;
     if (ioctl(p->fb_fd, FBIOGET_VSCREENINFO, &vinfo) < 0) return -errno;
     vinfo.yoffset = (p->back_idx == 1) ? p->h : 0;
-    if (ioctl(p->fb_fd, FBIOPAN_DISPLAY, &vinfo) < 0) {
+    if (ioctl(p->fb_fd, FBIOPAN_DISPLAY, &vinfo) < 0)
         LOG_W("backend_g2d: FBIOPAN_DISPLAY: %s", strerror(errno));
-    }
     p->back_idx ^= 1;
     return 0;
 }
@@ -254,6 +260,7 @@ static void g2d_close(struct mc_backend *be)
 {
     struct g2d_priv *p = be->priv;
     if (!p) return;
+    if (p->back.fd > 0) mc_alloc_destroy(&p->back);
     if (p->fb_map && p->fb_map != MAP_FAILED) munmap(p->fb_map, p->fb_map_size);
     if (p->fb_fd  >= 0) close(p->fb_fd);
     if (p->g2d_fd >= 0) close(p->g2d_fd);
@@ -265,63 +272,44 @@ static void g2d_close(struct mc_backend *be)
 /* hw_compose ops                                                     */
 /* ------------------------------------------------------------------ */
 
-static void g2d_clear_cpu(struct g2d_priv *p)
-{
-    uint8_t *back = p->fb_buf[p->back_idx];
-    if (back) memset(back, 0, p->stride * p->h);
-}
-
 static void g2d_begin_frame(struct mc_backend *be)
 {
     struct g2d_priv *p = be->priv;
     if (!p) return;
 
-    if (p->broken || p->g2d_fd < 0) {
-        g2d_clear_cpu(p);
+    if (p->broken) {
+        uint8_t *back = p->fb_buf[p->back_idx];
+        if (back) memset(back, 0, (size_t)p->stride * p->h);
         return;
     }
 
-    /* G2D FILLRECT: clear the whole fb back-buffer to opaque black. */
-    g2d_fillrect fr;
+    g2d_fillrect_h fr;
     memset(&fr, 0, sizeof(fr));
-    fr.flag        = G2D_FIL_NONE;        /* solid fill, no alpha mode */
-    fr.color       = 0xff000000u;         /* ARGB: opaque black        */
-    fr.alpha       = 0xff;
-    fr.dst_rect.x  = 0;
-    fr.dst_rect.y  = 0;
-    fr.dst_rect.w  = p->w;
-    fr.dst_rect.h  = p->h;
-    fill_g2d_image_fb(&fr.dst_image, p);
+    fill_img_back(p, &fr.dst_image_h, 0, 0, p->w, p->h);
+    fr.dst_image_h.color = 0xff000000u;   /* opaque black */
 
-    if (ioctl(p->g2d_fd, G2D_CMD_FILLRECT, &fr) < 0) {
-        LOG_W("backend_g2d: FILLRECT failed: %s", strerror(errno));
-        mark_broken(p, "FILLRECT ioctl failed");
-        g2d_clear_cpu(p);
+    if (ioctl(p->g2d_fd, G2D_CMD_FILLRECT_H, &fr) < 0) {
+        LOG_W("backend_g2d: FILLRECT_H failed: %s", strerror(errno));
+        mark_broken(p, "FILLRECT_H ioctl failed");
+        uint8_t *back = p->fb_buf[p->back_idx];
+        if (back) memset(back, 0, (size_t)p->stride * p->h);
     }
 }
 
-/* CPU per-surface blit fallback. Mirrors the simplest path in
- * accel_cpu.c so something is on screen even when G2D can't see the
- * client buffer. */
-static void draw_surface_cpu(struct g2d_priv *p, struct mc_surface *sf,
-                             const struct mc_buf *b)
+/* CPU per-surface blit fallback. dst_base is the active compose target. */
+static void draw_surface_cpu(struct g2d_priv *p, uint8_t *dst_base,
+                             struct mc_surface *sf, const struct mc_buf *b)
 {
-    if (!b->map) return;
-    uint8_t *dst_base = p->fb_buf[p->back_idx];
-    if (!dst_base) return;
+    if (!b->map || !dst_base) return;
+    int sx = 0, sy = 0, dx = sf->x, dy = sf->y, w = sf->w, h = sf->h;
+    if (dx < 0)        { sx -= dx; w += dx; dx = 0; }
+    if (dy < 0)        { sy -= dy; h += dy; dy = 0; }
+    if (dx + w > p->w) w = p->w - dx;
+    if (dy + h > p->h) h = p->h - dy;
+    if (w <= 0 || h <= 0) return;
 
-    int sx = 0, sy = 0;
-    int dx = sf->x, dy = sf->y;
-    int w  = sf->w, h = sf->h;
-    /* clip to screen */
-    if (dx < 0)              { sx -= dx; w += dx; dx = 0; }
-    if (dy < 0)              { sy -= dy; h += dy; dy = 0; }
-    if (dx + w > p->w)         w = p->w - dx;
-    if (dy + h > p->h)         h = p->h - dy;
-    if (w <= 0 || h <= 0)    return;
-
-    const uint8_t *src = b->map + sy * sf->stride + sx * 4;
-    uint8_t       *dst = dst_base + dy * p->stride + dx * 4;
+    const uint8_t *src = b->map + (size_t)sy * sf->stride + (size_t)sx * 4;
+    uint8_t       *dst = dst_base + (size_t)dy * p->stride + (size_t)dx * 4;
     for (int row = 0; row < h; row++) {
         memcpy(dst, src, (size_t)w * 4);
         src += sf->stride;
@@ -338,46 +326,35 @@ static void g2d_draw_surface(struct mc_backend *be, struct mc_surface *sf)
     if (idx < 0) return;
     const struct mc_buf *b = &sf->bufs[idx];
 
-    /* G2D path. Requires a HW-visible src buffer (phys or dma-buf fd). */
-    if (!p->broken && p->g2d_fd >= 0) {
-        uint32_t src_addr;
-        if (surface_addr(p, b, &src_addr) == 0) {
-            g2d_blt blt;
-            memset(&blt, 0, sizeof(blt));
-            /* Role 1 == FULLSCREEN: assume opaque, plain copy.
-             * Role 2 == POPUP (and bg): blend per-pixel alpha. */
-            int opaque = (sf->role == 1 /* FULLSCREEN */);
-            blt.flag  = opaque ? G2D_BLT_NONE : G2D_BLT_PIXEL_ALPHA;
-            blt.alpha = 0xff;
-
-            fill_g2d_image_from_surface(&blt.src_image, sf, src_addr);
-            blt.src_rect.x = 0;
-            blt.src_rect.y = 0;
-            blt.src_rect.w = sf->w;
-            blt.src_rect.h = sf->h;
-
-            fill_g2d_image_fb(&blt.dst_image, p);
-            blt.dst_x = sf->x;
-            blt.dst_y = sf->y;
-
-            if (ioctl(p->g2d_fd, G2D_CMD_BITBLT, &blt) == 0) {
-                return;   /* HW path succeeded */
-            }
-            LOG_W("backend_g2d: BITBLT failed: %s (sid=%u %dx%d@%d,%d)",
-                  strerror(errno), sf->sid, sf->w, sf->h, sf->x, sf->y);
-            mark_broken(p, "BITBLT ioctl failed");
-        }
+    if (p->broken) {
+        draw_surface_cpu(p, p->fb_buf[p->back_idx], sf, b);
+        return;
     }
 
-    /* CPU fallback. */
-    draw_surface_cpu(p, sf, b);
+    /* G2D path: BITBLT_H from the client dma-buf into our back-buffer. */
+    if (b->shm_fd >= 0) {
+        g2d_blt_h blt;
+        memset(&blt, 0, sizeof(blt));
+        blt.flag_h = G2D_BLT_NONE_H;               /* mixer blit */
+        fill_img_surface(&blt.src_image_h, sf, b);
+        fill_img_back(p, &blt.dst_image_h, sf->x, sf->y, sf->w, sf->h);
+
+        if (ioctl(p->g2d_fd, G2D_CMD_BITBLT_H, &blt) == 0)
+            return;
+        LOG_W("backend_g2d: BITBLT_H failed: %s (sid=%u %dx%d@%d,%d)",
+              strerror(errno), sf->sid, sf->w, sf->h, sf->x, sf->y);
+        mark_broken(p, "BITBLT_H ioctl failed");
+    }
+
+    /* Fell through: CPU blit straight into the fb (we've given up on G2D). */
+    draw_surface_cpu(p, p->fb_buf[p->back_idx], sf, b);
 }
 
 static void g2d_end_frame(struct mc_backend *be)
 {
-    /* G2D 1.0 BITBLT / FILLRECT are synchronous: the driver waits
-     * internally (see g2d_wait_cmd_finish() in the BSP). No per-frame
-     * sync ioctl needed. present() page-flips. */
+    /* BITBLT_H/FILLRECT_H run synchronously in the RCQ driver (it waits
+     * for cmd completion internally), so the back-buffer is ready by the
+     * time present() reads it. No explicit sync ioctl needed. */
     (void)be;
 }
 

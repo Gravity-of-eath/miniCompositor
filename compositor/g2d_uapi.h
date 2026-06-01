@@ -1,169 +1,136 @@
 /*
- * Allwinner G2D userspace ABI -- self-contained header so we don't depend
- * on a per-vendor <linux/g2d_driver.h> being present in the sysroot.
+ * Allwinner G2D userspace ABI for T113 (sun8iw20) -- self-contained so we
+ * don't depend on a vendor <linux/g2d_driver.h> in the sysroot.
  *
- * Two API generations coexist on Allwinner BSPs:
+ * IMPORTANT (verified 2026-06-01 against the actual BSP, NOT the PDF):
+ *   - docs/Linux G2D.pdf is the T5/T507 (sun50iw9) manual and is WRONG for
+ *     T113 in places (e.g. it swaps FILLRECT_H/MASK_H).
+ *   - T113 uses the *RCQ* G2D driver (deps_source/T113/sunxi_g2d-main/g2d_rcq/,
+ *     selected by CONFIG_ARCH_SUN8IW20 in the BSP Makefile). That driver's
+ *     ioctl table has NO 1.0 BITBLT(0x50)/FILLRECT(0x51) at all -- only the
+ *     2.0 "_H" ops and the RCQ task ops. So the only usable path on T113 is
+ *     the enhanced (g2d_image_enh) ABI below.
+ *   - T113 has a G2D IOMMU (G2D_IOMMU_MASTER_ID 3), so buffers are passed as
+ *     dma-buf fds (image.fd, use_phy_addr=0); the driver maps them via the
+ *     IOMMU. A sunxi-ion physical address (use_phy_addr=1, laddr[0]=phys)
+ *     also works but isn't required -- we use the fd path.
  *
- *   1.0  -- T113 (sun8iw20), older T-series, sun8iw11. Selected at
- *           runtime by sending G2D_CMD_BITBLT (0x50). Surface buffers
- *           are described by `g2d_image` (no fd/use_phy_addr field);
- *           addr[0] is treated as a physical address on kernels <= 5.4,
- *           and as a dma-buf fd on kernels >= 5.10. The Allwinner
- *           "Linux G2D 开发指南" v2.2 (2022.7.11) section 3.1.6 spells
- *           this out explicitly.
- *
- *   2.0  -- T507 (sun50iw9), and several other sun8iw / sun50iw parts
- *           with V2X support. G2D_CMD_BITBLT_H (0x55) etc., surfaces
- *           described by `g2d_image_enh` (has explicit fd + use_phy_addr).
- *           This is what compositor/accel_g2d.c was originally written
- *           against (transcribed there before this header existed).
- *
- * The ioctl numbers are bare integers, NOT _IO/_IOC magic-encoded
- * (verified by reading the kernel driver source -- they're just enum
- * values starting at 0x50). 1.0 occupies 0x50..0x54, 2.0 occupies
- * 0x55..0x58, then MEM_* utilities follow at 0x59+.
- *
- * Reference: deps_source/T113/sunxi_g2d-main/ (Allwinner T113 BSP G2D
- * driver, GPL-2.0). Userspace UAPI <linux/g2d_driver.h> ships with the
- * vendor SDK and is what the values below were cross-checked against.
+ * Field order/types below are transcribed verbatim from the T113 vendor
+ * header so the struct layout matches what the kernel copy_from_user()s.
+ * Reference impl that this was cross-checked against:
+ *   3rdLibrary/Awtk_g2d/awtk-tina-g2d/src/g2d_tina.c
  */
 #ifndef MC_G2D_UAPI_H
 #define MC_G2D_UAPI_H
 
 #include <stdint.h>
 
-/* ============================================================ *
- * ioctl numbers (shared 1.0 + 2.0)                              *
- * ============================================================ */
-
-enum {
-    /* 1.0 (T113, sun8iw11, older parts) */
-    G2D_CMD_BITBLT          = 0x50,
-    G2D_CMD_FILLRECT        = 0x51,
-    G2D_CMD_STRETCHBLT      = 0x52,
-    G2D_CMD_PALETTE_TBL     = 0x53,   /* not used here */
-    G2D_CMD_QUEUE           = 0x54,
-
-    /* 2.0 (T507, V2X-capable parts) */
-    G2D_CMD_BITBLT_H        = 0x55,
-    G2D_CMD_MASK_H          = 0x56,
-    G2D_CMD_BLD_H           = 0x57,
-    G2D_CMD_FILLRECT_H      = 0x58,
-
-    /* memory pool helpers (not used by mc) */
-    G2D_CMD_MEM_REQUEST     = 0x59,
-    G2D_CMD_MEM_RELEASE     = 0x5a,
-    G2D_CMD_MEM_SELIDX      = 0x5b,
-    G2D_CMD_MEM_GETADR      = 0x5c,
-    G2D_CMD_INVERTED_ORDER  = 0x5d,
-};
-
 #define MC_G2D_DEV_PATH "/dev/g2d"
 
-/* ============================================================ *
- * 1.0 ABI -- used on T113                                       *
- *                                                               *
- * Section refs are to "Linux G2D 开发指南 v2.2 (2022.7.11)" in   *
- * docs/Linux G2D.pdf.                                           *
- * ============================================================ */
-
-/* 3.1.1 g2d_blt_flags -- bitblt / stretchblt operation flags. */
+/* ioctl numbers (bare ints, not _IOC-encoded for the _H series). */
 enum {
-    G2D_BLT_NONE             = 0x00000000,
-    G2D_BLT_PIXEL_ALPHA      = 0x00000001,  /* per-pixel source alpha */
-    G2D_BLT_PLANE_ALPHA      = 0x00000002,  /* global plane alpha     */
-    G2D_BLT_MULTI_ALPHA      = 0x00000004,  /* per-pixel * plane      */
-    G2D_BLT_SRC_COLORKEY     = 0x00000008,
-    G2D_BLT_DST_COLORKEY     = 0x00000010,
-    G2D_BLT_FLIP_HORIZONTAL  = 0x00000020,
-    G2D_BLT_FLIP_VERTICAL    = 0x00000040,
-    G2D_BLT_ROTATE90         = 0x00000080,
-    G2D_BLT_ROTATE180        = 0x00000100,
-    G2D_BLT_ROTATE270        = 0x00000200,
-    G2D_BLT_MIRROR45         = 0x00000400,
-    G2D_BLT_MIRROR135        = 0x00000800,
+    G2D_CMD_BITBLT_H   = 0x55,
+    G2D_CMD_FILLRECT_H = 0x56,
+    G2D_CMD_BLD_H      = 0x57,   /* Porter-Duff blend (per-pixel alpha) */
+    G2D_CMD_MASK_H     = 0x58,
 };
 
-/* 3.1.2 g2d_fillrect_flags. */
-enum {
-    G2D_FIL_NONE             = 0x00000000,
-    G2D_FIL_PIXEL_ALPHA      = 0x00000001,
-    G2D_FIL_PLANE_ALPHA      = 0x00000002,
-    G2D_FIL_MULTI_ALPHA      = 0x00000004,
-};
+/* g2d_fmt_enh -- only the 32bpp packed formats mc uses. mc surfaces are
+ * BGRA8888 (== MC_FMT). The full enum starts at ARGB8888=0. */
+typedef enum {
+    G2D_FORMAT_ARGB8888 = 0,
+    G2D_FORMAT_ABGR8888 = 1,
+    G2D_FORMAT_RGBA8888 = 2,
+    G2D_FORMAT_BGRA8888 = 3,
+    G2D_FORMAT_XRGB8888 = 4,
+    G2D_FORMAT_XBGR8888 = 5,
+    G2D_FORMAT_RGBX8888 = 6,
+    G2D_FORMAT_BGRX8888 = 7,
+} g2d_fmt_enh;
 
-/* 3.1.3 g2d_data_fmt -- pixel formats supported by 1.0 ABI.
- * mc clients are BGRA8888 == G2D_FMT_BGRA8888 (0x01). */
-enum {
-    G2D_FMT_ARGB_AYUV8888  = 0x00,
-    G2D_FMT_BGRA_VUYA8888  = 0x01,   /* this is what mc surfaces are */
-    G2D_FMT_ABGR_AVUY8888  = 0x02,
-    G2D_FMT_RGBA_YUVA8888  = 0x03,
-    G2D_FMT_XRGB8888       = 0x04,
-    G2D_FMT_BGRX8888       = 0x05,
-    G2D_FMT_XBGR8888       = 0x06,
-    G2D_FMT_RGBX8888       = 0x07,
-};
+/* g2d_blt_flags_h -- value of g2d_blt_h.flag_h.
+ * NB: the RCQ driver routes (flag_h & 0xff00) to the rotate engine and the
+ * rest to the mixer. G2D_BLT_NONE_H (0) => plain mixer blit. */
+typedef enum {
+    G2D_BLT_NONE_H = 0x0,
+    G2D_ROT_90     = 0x00000100,
+    G2D_ROT_180    = 0x00000200,
+    G2D_ROT_270    = 0x00000300,
+    G2D_ROT_0      = 0x00000400,
+} g2d_blt_flags_h;
 
-/* 3.1.4 g2d_pixel_seq -- normal for our 32bpp BGRA surfaces. */
-enum {
-    G2D_SEQ_NORMAL         = 0x0,
-};
+/* g2d_alpha_mode_enh -- g2d_image_enh.mode */
+typedef enum {
+    G2D_PIXEL_ALPHA  = 0,
+    G2D_GLOBAL_ALPHA = 1,
+    G2D_MIXER_ALPHA  = 2,
+} g2d_alpha_mode_enh;
 
-/* 3.1.14 g2d_scan_order. */
-enum {
-    G2D_SM_TDLR = 0x00000000,  /* top->down, left->right (default) */
-    G2D_SM_DTLR = 0x00000001,
-    G2D_SM_TDRL = 0x00000002,
-    G2D_SM_DTRL = 0x00000003,
-};
+/* Porter-Duff command for BLD_H (g2d_bld.bld_cmd). SRCOVER = src over dst. */
+typedef enum {
+    G2D_BLD_CLEAR   = 0x00000001,
+    G2D_BLD_COPY    = 0x00000002,
+    G2D_BLD_DST     = 0x00000003,
+    G2D_BLD_SRCOVER = 0x00000004,
+    G2D_BLD_DSTOVER = 0x00000005,
+} g2d_bld_cmd_flag;
 
-/* 3.1.6 g2d_image (version 1.0).
- *
- * IMPORTANT: addr[0]'s meaning depends on the kernel:
- *   - linux <= 5.4: addr[0] is a 32-bit physical address (or DMA addr
- *     for an IOMMU-mapped buffer).
- *   - linux >= 5.10: addr[0] is a dma-buf fd allocated via dma_heap.
- *     addr[1] / addr[2] are reserved (kept 0).
- *
- * For BGRA8888 only addr[0] is meaningful regardless of kernel. */
-typedef struct {
-    uint32_t addr[3];
-    uint32_t w;
-    uint32_t h;
-    uint32_t format;        /* G2D_FMT_* */
-    uint32_t pixel_seq;     /* G2D_SEQ_* */
-} g2d_image;
+typedef enum { G2D_BT601 = 0, G2D_BT709 = 1, G2D_BT2020 = 2 } g2d_color_gmt;
+enum color_range { COLOR_RANGE_0_255 = 0, COLOR_RANGE_16_235 = 1 };
 
-/* 3.1 g2d_rect / coor (shared by 1.0 and 2.0). */
 typedef struct { int32_t  x, y; uint32_t w, h; } g2d_rect;
+typedef struct { uint32_t w, h; }                g2d_size;
 typedef struct { uint32_t x, y; }                g2d_coor;
 
-/* 3.1.15 g2d_blt -- arg for G2D_CMD_BITBLT. */
+/* CK (colour-key) params -- unused by mc but part of g2d_bld's layout. */
 typedef struct {
-    uint32_t  flag;          /* g2d_blt_flags                */
-    g2d_image src_image;
-    g2d_rect  src_rect;
-    g2d_image dst_image;
-    int32_t   dst_x;         /* dst top-left x */
-    int32_t   dst_y;         /* dst top-left y */
-    uint32_t  color;         /* colorkey, ignored unless COLORKEY flags */
-    uint32_t  alpha;         /* plane alpha when *_PLANE_ALPHA flag set */
-} g2d_blt;
+    int       match_rule;   /* `bool` in vendor hdr; int keeps size/align */
+    uint32_t  max_color;
+    uint32_t  min_color;
+} g2d_ck;
 
-/* 3.1.16 g2d_fillrect -- arg for G2D_CMD_FILLRECT. */
+/* g2d_image_enh -- field order MUST match the vendor header exactly. */
 typedef struct {
-    uint32_t  flag;          /* g2d_fillrect_flags */
-    g2d_image dst_image;
-    g2d_rect  dst_rect;
-    uint32_t  color;         /* ARGB: A[31:24] R[23:16] G[15:8] B[7:0] */
-    uint32_t  alpha;         /* plane alpha when *_PLANE_ALPHA flag set */
-} g2d_fillrect;
+    int                 bbuff;
+    uint32_t            color;
+    g2d_fmt_enh         format;
+    uint32_t            laddr[3];
+    uint32_t            haddr[3];
+    uint32_t            width;       /* full buffer width in pixels  */
+    uint32_t            height;      /* full buffer height in pixels */
+    uint32_t            align[3];
+    g2d_rect            clip_rect;   /* region to operate on         */
+    g2d_size            resize;
+    g2d_coor            coor;
+    g2d_color_gmt       gamut;
+    int                 bpremul;
+    uint8_t             alpha;       /* plane alpha (GLOBAL_ALPHA)    */
+    g2d_alpha_mode_enh  mode;
+    int                 fd;          /* dma-buf fd (use_phy_addr=0)   */
+    uint32_t            use_phy_addr;
+    enum color_range    color_range;
+} g2d_image_enh;
 
-/* ============================================================ *
- * 2.0 ABI -- used on T507 (see compositor/accel_g2d.c)          *
- * NOT redefined here; accel_g2d.c keeps its own copy until that *
- * file is moved over.                                           *
- * ============================================================ */
+/* arg for G2D_CMD_FILLRECT_H */
+typedef struct {
+    g2d_image_enh dst_image_h;
+} g2d_fillrect_h;
+
+/* arg for G2D_CMD_BITBLT_H */
+typedef struct {
+    g2d_blt_flags_h flag_h;
+    g2d_image_enh   src_image_h;
+    g2d_image_enh   dst_image_h;
+} g2d_blt_h;
+
+/* arg for G2D_CMD_BLD_H. src_image[0]=top layer, src_image[1]=bottom;
+ * dst_image=output. Only ch0/ch3 are used by the engine but the array is
+ * 4 wide in the ABI. */
+typedef struct {
+    g2d_bld_cmd_flag bld_cmd;
+    g2d_image_enh    dst_image;
+    g2d_image_enh    src_image[4];
+    g2d_ck           ck_para;
+} g2d_bld;
 
 #endif /* MC_G2D_UAPI_H */
