@@ -51,6 +51,20 @@ struct dma_buf_sync { uint64_t flags; };
 #define DMA_BUF_SYNC_END   (1 << 2)
 #define DMA_BUF_IOCTL_SYNC _IOW('b', 0, struct dma_buf_sync)
 #endif
+#ifndef DMA_BUF_SYNC_RW
+#define DMA_BUF_SYNC_RW (DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE)
+#endif
+
+/* Vendor cache maintenance. The dma-buf SYNC ioctl above is a no-op for
+ * sunxi-ion on T113's kernel, so G2D's DMA reads pick up stale CPU-cached
+ * pixels -> random horizontal white lines. The verified Awtk_g2d reference
+ * flushes (clean+invalidate) via /dev/cedar_dev's AW_MEM_FLUSH_CACHE_RANGE
+ * over the buffer's CPU virtual range; we do the same, and keep the
+ * standard dma-buf SYNC only as a fallback when cedar isn't available.
+ * sunxi_cache_range uses 64-bit fields on kernels >= 5.4 (T113). */
+#define CEDAR_DEV_PATH           "/dev/cedar_dev"
+#define AW_MEM_FLUSH_CACHE_RANGE 0x506
+struct sunxi_cache_range { long long start; long long end; };
 
 struct g2d_priv {
     /* fb (final scanout target). */
@@ -65,6 +79,7 @@ struct g2d_priv {
 
     /* g2d. */
     int       g2d_fd;
+    int       cedar_fd;        /* /dev/cedar_dev for cache flush, -1 if none */
     int       broken;          /* 1: CPU fallback only */
 
     /* dma-buf compose target (G2D writes here, we memcpy to fb). */
@@ -167,6 +182,23 @@ static void dmabuf_sync(int fd, uint64_t flags)
     (void)ioctl(fd, DMA_BUF_IOCTL_SYNC, &s);   /* best effort */
 }
 
+/* Clean+invalidate the CPU cache for [vaddr, vaddr+size). Prefer the sunxi
+ * cedar ioctl (works on T113); fall back to dma-buf SYNC otherwise. */
+static void g2d_cache_flush(struct g2d_priv *p, void *vaddr, size_t size, int fd)
+{
+    if (p->cedar_fd >= 0 && vaddr) {
+        struct sunxi_cache_range r;
+        r.start = (long long)(uintptr_t)vaddr;
+        r.end   = r.start + (long long)size;
+        if (ioctl(p->cedar_fd, AW_MEM_FLUSH_CACHE_RANGE, &r) == 0)
+            return;
+    }
+    if (fd >= 0) {
+        dmabuf_sync(fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_RW);
+        dmabuf_sync(fd, DMA_BUF_SYNC_END   | DMA_BUF_SYNC_RW);
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* mc_backend ops                                                     */
 /* ------------------------------------------------------------------ */
@@ -180,8 +212,9 @@ static int g2d_open(struct mc_backend *be, const char *arg,
 
     struct g2d_priv *p = calloc(1, sizeof(*p));
     if (!p) return -ENOMEM;
-    p->g2d_fd = -1;
-    p->fb_fd  = -1;
+    p->g2d_fd   = -1;
+    p->fb_fd    = -1;
+    p->cedar_fd = -1;
 
     int rc = g2d_open_fb(p, arg);
     if (rc < 0) { free(p); return rc; }
@@ -192,6 +225,13 @@ static int g2d_open(struct mc_backend *be, const char *arg,
               MC_G2D_DEV_PATH, strerror(errno));
         p->broken = 1;
     }
+
+    /* cedar device drives the sunxi cache-flush ioctl (see g2d_cache_flush). */
+    p->cedar_fd = open(CEDAR_DEV_PATH, O_RDONLY | O_CLOEXEC);
+    if (p->cedar_fd < 0)
+        LOG_W("backend_g2d: %s not openable (%s) -- cache flush falls back to "
+              "dma-buf SYNC (may be a no-op; expect white lines if so)",
+              CEDAR_DEV_PATH, strerror(errno));
 
     /* dma-buf back-buffer that G2D composites into. Same size/stride as
      * the fb so the present memcpy is a straight linear copy. */
@@ -239,11 +279,11 @@ static int g2d_present(struct mc_backend *be)
     struct g2d_priv *p = be->priv;
     if (!p) return 0;
 
-    /* HW path: pull G2D's output out of the dma-buf and into the fb. */
+    /* HW path: pull G2D's output out of the dma-buf and into the fb.
+     * Invalidate first so the CPU read sees G2D's writes, not stale lines. */
     if (!p->broken) {
-        dmabuf_sync(p->back.fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ);
+        g2d_cache_flush(p, p->back.map, (size_t)p->stride * p->h, p->back.fd);
         memcpy(p->fb_buf[p->back_idx], p->back.map, (size_t)p->stride * p->h);
-        dmabuf_sync(p->back.fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ);
     }
 
     if (!p->double_buf) return 0;
@@ -262,8 +302,9 @@ static void g2d_close(struct mc_backend *be)
     if (!p) return;
     if (p->back.fd > 0) mc_alloc_destroy(&p->back);
     if (p->fb_map && p->fb_map != MAP_FAILED) munmap(p->fb_map, p->fb_map_size);
-    if (p->fb_fd  >= 0) close(p->fb_fd);
-    if (p->g2d_fd >= 0) close(p->g2d_fd);
+    if (p->fb_fd   >= 0) close(p->fb_fd);
+    if (p->g2d_fd  >= 0) close(p->g2d_fd);
+    if (p->cedar_fd >= 0) close(p->cedar_fd);
     free(p);
     be->priv = NULL;
 }
@@ -343,8 +384,7 @@ static void g2d_draw_surface(struct mc_backend *be, struct mc_surface *sf)
          * the image shows random horizontal white streaks. Mirrors the
          * explicit g2d_tina_mem_flush() fix in the verified Awtk_g2d
          * reference (commit "背景图片会出现横向随机白色线条问题"). */
-        dmabuf_sync(b->shm_fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE);
-        dmabuf_sync(b->shm_fd, DMA_BUF_SYNC_END   | DMA_BUF_SYNC_WRITE);
+        g2d_cache_flush(p, b->map, b->size, b->shm_fd);
 
         blt.flag_h = G2D_BLT_NONE_H;               /* mixer blit */
         fill_img_surface(&blt.src_image_h, sf, b);
