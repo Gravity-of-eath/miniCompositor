@@ -8,7 +8,7 @@
 # Supported PLATFORM:
 #   T507   Allwinner T507 (aarch64, Mali-G31). Default.
 #   T113   Allwinner T113 (armv7-musl, no GPU, G2D 2D engine via backend_g2d).
-#          LVGL/AWTK not ported yet -> packages compositor + tools only.
+#          LVGL demos + AWTK (software mc_sw lcd client) both build & package.
 #
 # Outputs:
 #   output/<PLATFORM>/staging/        full unpacked tree, ready to scp/adb push
@@ -25,8 +25,8 @@
 #                /develop/toolchain_t113_musl/bin/arm-openwrt-linux-muslgnueabi-)
 #   JOBS         make -j level (default: nproc)
 #   SKIP_AWTK=1  skip the AWTK scons build (much slower than mc itself).
-#                For T113 this defaults to 1 until an AWTK fb_devices/mc
-#                port exists under deps_source/T113/awtk/.
+#                T113 builds AWTK by default (software mc_sw lcd client);
+#                set SKIP_AWTK=1 to skip it (e.g. if scons is unavailable).
 #   SKIP_LVGL=1  skip the LVGL demos. Auto-on when the platform has no
 #                prebuilt deps_libs/<PLATFORM>/lvgl/liblvgl9.a (e.g. T113,
 #                whose LVGL port isn't in the tree yet). Override =0 once
@@ -289,33 +289,33 @@ setsid sh -c "\$HERE/bin/mc-compositor -v \\
     > /tmp/mc-compositor.log 2>&1" </dev/null >/dev/null 2>&1 &
 sleep 1
 
-# 2. AWTK demo (demo1 binary, packaged as awtk-demo)
+# --- Mixed AWTK + LVGL overlay test ---
+# 2. AWTK demo as the FULLSCREEN base layer (bottom). AWTK's mc surface is
+#    sized to the whole screen (lcd_mc queries mc_get_screen_info), so it
+#    runs as MC_ROLE_FULLSCREEN. Falls back to an LVGL fullscreen if AWTK
+#    wasn't built.
 if [ -x "\$HERE/bin/awtk-demo" ]; then
     setsid sh -c "cd \$HERE && \\
         LD_LIBRARY_PATH=\$LIB:/usr/lib \\
         MC_SOCKET=/tmp/mc.sock \\
         MC_APP_NAME=awtk-demo \\
+        MC_ROLE=fullscreen \\
         \$HERE/bin/awtk-demo \\
         > /tmp/mc-awtk.log 2>&1" </dev/null >/dev/null 2>&1 &
     sleep 3
-fi
-
-# 3. LVGL fullscreen demos (only if packaged -- not present on T113 yet)
-if [ -x "\$HERE/bin/demo-fullscreen" ]; then
+elif [ -x "\$HERE/bin/demo-fullscreen" ]; then
     setsid sh -c "\$HERE/bin/demo-fullscreen --socket /tmp/mc.sock \\
         --name dashboard --bg 0xFF205080 \\
         > /tmp/mc-dashboard.log 2>&1" </dev/null >/dev/null 2>&1 &
     sleep 2
-    setsid sh -c "\$HERE/bin/demo-fullscreen --socket /tmp/mc.sock \\
-        --name diagnostics --bg 0xFFB02040 \\
-        > /tmp/mc-diagnostics.log 2>&1" </dev/null >/dev/null 2>&1 &
-    sleep 2
 fi
 
-# 4. LVGL popup overlay
+# 3. LVGL popup overlay on TOP. Its transparent rounded card lets the AWTK
+#    layer beneath show through -- this is the heterogeneous AWTK+LVGL
+#    compositing test (opaque base via BITBLT_H + alpha popup via BLD_H).
 if [ -x "\$HERE/bin/demo-popup" ]; then
     setsid sh -c "\$HERE/bin/demo-popup --socket /tmp/mc.sock \\
-        --x 300 --y 150 --w 400 --h 240 \\
+        --x 220 --y 120 --w 360 --h 240 \\
         > /tmp/mc-popup.log 2>&1" </dev/null >/dev/null 2>&1 &
     sleep 2
 fi
