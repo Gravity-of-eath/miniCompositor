@@ -25,16 +25,31 @@ OS_LINKFLAGS = " -Wl,--gc-sections -Wl,--as-needed -Wl,-s "
 # compile libs
 # ..example: OS_LIBS = ["lib1", "lib2"]
 # OS_LIBS = None "dl","m","pthread",
-# OS_LIBS = ["EGL", "GLESv2"]
-#OS_LIBS = ["ts"]
+# The mc_sw device (lcd_devices/mc/lcd_mc.c) calls mc_connect / mc_surface_*
+# which live in libmc.a — link it.
+OS_LIBS = ["mc"]
+
+# Path to the mc framework root.
+# The AWTK source tree lives at
+#   <MC_ROOT>/deps_source/T113/awtk/awtk-linux-fb
+# so stepping up four levels from awtk-linux-fb/ reaches MC_ROOT.
+MC_ROOT = os.path.abspath("../../../..")
 
 # compile lib paths
 # ..example: OS_LIBPATH = ["/path/to/libdir1", "/path/to/libdir2"]
-OS_LIBPATH = ["/develop/toolchain_t113_musl/lib","/develop/toolchain_t113_musl/lib32","/develop/toolchain_t113_musl/lib64"]
+OS_LIBPATH = [
+    os.path.join(MC_ROOT, "build"),                      # libmc.a (built by top-level make)
+    "/develop/toolchain_t113_musl/lib",
+    "/develop/toolchain_t113_musl/lib32",
+    "/develop/toolchain_t113_musl/lib64",
+]
 
 # compile include paths
 # ..example: OS_CPPPATH = ["/path/to/incdir1", "/path/to/incdir2"]
-OS_CPPPATH = ["/develop/toolchain_t113_musl/include"]
+OS_CPPPATH = [
+    os.path.join(MC_ROOT, "libmc/include"),              # mc.h (needed by lcd_mc.c)
+    "/develop/toolchain_t113_musl/include",
+]
 
 # compile tools prefix CC's name
 TOOLS_CC = None

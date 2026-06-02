@@ -50,9 +50,9 @@ T113)
     # We just need CROSS_COMPILE to point at the gcc/ar binaries; the
     # Makefile picks it up via CROSS=1.
     T113_TOOLCHAIN="${T113_TOOLCHAIN:-/develop/toolchain_t113_musl/bin/arm-openwrt-linux-muslgnueabi-}"
-    # AWTK on T113 needs a separate fb_devices/mc port (no GPU); skip
-    # by default until that lands.
-    SKIP_AWTK="${SKIP_AWTK:-1}"
+    # AWTK on T113 uses the mc_sw (software CPU) lcd device — no GPU/EGL.
+    # Default to enabled (0); set SKIP_AWTK=1 to skip if scons is missing.
+    SKIP_AWTK="${SKIP_AWTK:-0}"
     ;;
 *)
     echo "ERROR: unsupported platform '$PLATFORM'."
@@ -176,27 +176,50 @@ AWTK_LINUX_FB="deps_source/$PLATFORM/awtk/awtk-linux-fb"
 if [[ "${SKIP_AWTK:-0}" == "1" ]]; then
     log "SKIP_AWTK=1 set, skipping AWTK build"
 else
-    log "building AWTK + demo1 (scons)"
+    # Choose the sub-build target: T113 uses the mc_sw config (no GPU/EGL);
+    # T507 uses its own t5/mc config.
+    case "$PLATFORM" in
+    T113) AWTK_BUILD_TARGET="T113-mc" ;;
+    *)    AWTK_BUILD_TARGET="$PLATFORM" ;;
+    esac
+
+    log "building AWTK + demo1 (scons, target: $AWTK_BUILD_TARGET)"
+    # Guard: a scons failure inside the AWTK sub-build must warn rather than
+    # abort the whole script (mc compositor + LVGL output is still valid).
+    set +e
     (
         cd "$AWTK_LINUX_FB"
-        # build.sh T507 picks the t5 config + runs scons cleanly
-        ./build.sh "$PLATFORM"
+        ./build.sh "$AWTK_BUILD_TARGET"
     )
-    cp -v "$AWTK_LINUX_FB/bin/libawtk.so" "$STAGE/lib/"
-    cp -v "$AWTK_LINUX_FB/bin/demo1"      "$STAGE/bin/awtk-demo1"
+    AWTK_RC=$?
+    set -e
+
+    if [[ $AWTK_RC -ne 0 ]]; then
+        warn "AWTK build FAILED (rc=$AWTK_RC) — skipping AWTK packaging."
+        warn "Set SKIP_AWTK=1 to suppress this attempt entirely."
+    else
+        cp -v "$AWTK_LINUX_FB/bin/libawtk.so" "$STAGE/lib/"
+        cp -v "$AWTK_LINUX_FB/bin/demo1"       "$STAGE/bin/awtk-demo"
+    fi
 fi
 
-# ---------- 3. tslib runtime (needed by AWTK demo1) --------------------
+# ---------- 3. tslib runtime (needed by AWTK on T507; T113 uses mc input) -----
 
-log "copying tslib runtime (libts + plugins)"
 TSLIB_SRC="deps_libs/$PLATFORM/tslib/lib"
-if [[ -f "$TSLIB_SRC/libts-1.3.so.0.1.3" ]]; then
-    cp -v "$TSLIB_SRC"/libts-1.3.so.0.1.3 "$STAGE/lib/"
-    (cd "$STAGE/lib" && ln -sf libts-1.3.so.0.1.3 libts-1.3.so.0)
-    mkdir -p "$STAGE/lib/ts"
-    cp -v "$TSLIB_SRC"/ts/*.so "$STAGE/lib/ts/" 2>/dev/null || true
+if [[ "$PLATFORM" == "T113" ]]; then
+    # T113 AWTK input comes through mc (input_thread_mc.c), not tslib.
+    # Skip tslib copy for T113 silently.
+    true
 else
-    warn "tslib for $PLATFORM not found at $TSLIB_SRC -- AWTK demo will fail to load"
+    log "copying tslib runtime (libts + plugins)"
+    if [[ -f "$TSLIB_SRC/libts-1.3.so.0.1.3" ]]; then
+        cp -v "$TSLIB_SRC"/libts-1.3.so.0.1.3 "$STAGE/lib/"
+        (cd "$STAGE/lib" && ln -sf libts-1.3.so.0.1.3 libts-1.3.so.0)
+        mkdir -p "$STAGE/lib/ts"
+        cp -v "$TSLIB_SRC"/ts/*.so "$STAGE/lib/ts/" 2>/dev/null || true
+    else
+        warn "tslib for $PLATFORM not found at $TSLIB_SRC -- AWTK demo will fail to load"
+    fi
 fi
 
 # ---------- 4. AWTK demo resources -------------------------------------
@@ -250,7 +273,7 @@ HERE=/data/mc_stack
 LIB="\$HERE/lib"
 
 # kill any previous instances
-for p in \$(ps | grep -E "mc-compositor|demo-fullscreen|demo-popup|awtk-demo1" | grep -v grep | awk '{print \$1}'); do
+for p in \$(ps | grep -E "mc-compositor|demo-fullscreen|demo-popup|awtk-demo" | grep -v grep | awk '{print \$1}'); do
     kill -9 \$p 2>/dev/null
 done
 sleep 1
@@ -266,15 +289,13 @@ setsid sh -c "\$HERE/bin/mc-compositor -v \\
     > /tmp/mc-compositor.log 2>&1" </dev/null >/dev/null 2>&1 &
 sleep 1
 
-# 2. AWTK demo1
-if [ -x "\$HERE/bin/awtk-demo1" ]; then
+# 2. AWTK demo (demo1 binary, packaged as awtk-demo)
+if [ -x "\$HERE/bin/awtk-demo" ]; then
     setsid sh -c "cd \$HERE && \\
         LD_LIBRARY_PATH=\$LIB:/usr/lib \\
-        TSLIB_PLUGINDIR=\$LIB/ts \\
-        TSLIB_CONFFILE=\$HERE/lib/ts/ts.conf \\
         MC_SOCKET=/tmp/mc.sock \\
-        MC_APP_NAME=awtk-demo1 \\
-        \$HERE/bin/awtk-demo1 \\
+        MC_APP_NAME=awtk-demo \\
+        \$HERE/bin/awtk-demo \\
         > /tmp/mc-awtk.log 2>&1" </dev/null >/dev/null 2>&1 &
     sleep 3
 fi
@@ -300,14 +321,14 @@ if [ -x "\$HERE/bin/demo-popup" ]; then
 fi
 
 echo "started. logs in /tmp/mc-*.log"
-ps | grep -E "mc-comp|demo-|awtk-demo1" | grep -v grep | grep -v "sh -c"
+ps | grep -E "mc-comp|demo-|awtk-demo" | grep -v grep | grep -v "sh -c"
 EOF
 chmod +x "$STAGE/scripts/start.sh"
 
 cat > "$STAGE/scripts/stop.sh" <<'EOF'
 #!/bin/sh
 # Stop the entire mc stack.
-for p in $(ps | grep -E "mc-compositor|demo-fullscreen|demo-popup|awtk-demo1" | grep -v grep | awk '{print $1}'); do
+for p in $(ps | grep -E "mc-compositor|demo-fullscreen|demo-popup|awtk-demo" | grep -v grep | awk '{print $1}'); do
     kill -9 $p 2>/dev/null
 done
 sleep 1
