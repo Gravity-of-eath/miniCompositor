@@ -282,12 +282,21 @@ rm -f /tmp/mc.sock /tmp/mc-*.log
 
 INPUT="\${MC_INPUT:-/dev/input/event1}"  # touchscreen
 
+# launch <logfile> <shell-command>: background a command, detached, with the
+# log redirect applied at the OUTER level so the log is always created even
+# if 'setsid' is absent (busybox may not ship it). Falls back to plain sh.
+launch() {
+    _log="\$1"; _cmd="\$2"
+    if command -v setsid >/dev/null 2>&1; then
+        setsid sh -c "\$_cmd" </dev/null >"\$_log" 2>&1 &
+    else
+        sh -c "\$_cmd" </dev/null >"\$_log" 2>&1 &
+    fi
+}
+
 # 1. compositor ($PLATFORM compose backend: $START_BACKEND)
-setsid sh -c "\$HERE/bin/mc-compositor -v \\
-    --backend $START_BACKEND \\
-    --socket /tmp/mc.sock \\
-    --input \$INPUT \\
-    > /tmp/mc-compositor.log 2>&1" </dev/null >/dev/null 2>&1 &
+launch /tmp/mc-compositor.log \\
+    "\$HERE/bin/mc-compositor -v --backend $START_BACKEND --socket /tmp/mc.sock --input \$INPUT"
 sleep 1
 
 # --- Mixed AWTK + LVGL overlay test ---
@@ -296,18 +305,12 @@ sleep 1
 #    runs as MC_ROLE_FULLSCREEN. Falls back to an LVGL fullscreen if AWTK
 #    wasn't built.
 if [ -x "\$HERE/bin/awtk-demo" ]; then
-    setsid sh -c "cd \$HERE && \\
-        LD_LIBRARY_PATH=\$LIB:/usr/lib \\
-        MC_SOCKET=/tmp/mc.sock \\
-        MC_APP_NAME=awtk-demo \\
-        MC_ROLE=fullscreen \\
-        \$HERE/bin/awtk-demo \\
-        > /tmp/mc-awtk.log 2>&1" </dev/null >/dev/null 2>&1 &
+    launch /tmp/mc-awtk.log \\
+        "cd \$HERE && LD_LIBRARY_PATH=\$LIB:/usr/lib MC_SOCKET=/tmp/mc.sock MC_APP_NAME=awtk-demo MC_ROLE=fullscreen \$HERE/bin/awtk-demo"
     sleep 3
 elif [ -x "\$HERE/bin/demo-fullscreen" ]; then
-    setsid sh -c "\$HERE/bin/demo-fullscreen --socket /tmp/mc.sock \\
-        --name dashboard --bg 0xFF205080 \\
-        > /tmp/mc-dashboard.log 2>&1" </dev/null >/dev/null 2>&1 &
+    launch /tmp/mc-dashboard.log \\
+        "\$HERE/bin/demo-fullscreen --socket /tmp/mc.sock --name dashboard --bg 0xFF205080"
     sleep 2
 fi
 
@@ -315,9 +318,8 @@ fi
 #    layer beneath show through -- this is the heterogeneous AWTK+LVGL
 #    compositing test (opaque base via BITBLT_H + alpha popup via BLD_H).
 if [ -x "\$HERE/bin/demo-popup" ]; then
-    setsid sh -c "\$HERE/bin/demo-popup --socket /tmp/mc.sock \\
-        --x 220 --y 120 --w 360 --h 240 \\
-        > /tmp/mc-popup.log 2>&1" </dev/null >/dev/null 2>&1 &
+    launch /tmp/mc-popup.log \\
+        "\$HERE/bin/demo-popup --socket /tmp/mc.sock --x 220 --y 120 --w 360 --h 240"
     sleep 2
 fi
 
