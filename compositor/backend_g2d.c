@@ -147,7 +147,8 @@ static void fill_img_surface(g2d_image_enh *img, const struct mc_surface *sf,
     memset(img, 0, sizeof(*img));
     img->fd           = b->shm_fd;
     img->use_phy_addr = 0;
-    img->format       = G2D_FORMAT_BGRA8888;
+    img->format       = G2D_FORMAT_ARGB8888;   /* mc is BGRA8888 in memory,
+                                                 * == G2D word-order ARGB8888 */
     img->width        = sf->w;
     img->height       = sf->h;
     img->clip_rect.x  = 0;
@@ -165,7 +166,8 @@ static void fill_img_back(struct g2d_priv *p, g2d_image_enh *img,
     memset(img, 0, sizeof(*img));
     img->fd           = p->back.fd;
     img->use_phy_addr = 0;
-    img->format       = G2D_FORMAT_BGRA8888;
+    img->format       = G2D_FORMAT_ARGB8888;   /* mc is BGRA8888 in memory,
+                                                 * == G2D word-order ARGB8888 */
     img->width        = p->w;
     img->height       = p->h;
     img->clip_rect.x  = x;

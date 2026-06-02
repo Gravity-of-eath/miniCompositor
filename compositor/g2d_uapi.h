@@ -35,8 +35,12 @@ enum {
     G2D_CMD_MASK_H     = 0x58,
 };
 
-/* g2d_fmt_enh -- only the 32bpp packed formats mc uses. mc surfaces are
- * BGRA8888 (== MC_FMT). The full enum starts at ARGB8888=0. */
+/* g2d_fmt_enh -- 32bpp packed formats. NB the names are 32-bit *word* order
+ * (MSB..LSB), while buffers are little-endian *byte* order. So an mc surface
+ * whose bytes are [B,G,R,A] in memory (mc's BGRA8888) is a 0xAARRGGBB word ==
+ * G2D_FORMAT_ARGB8888. The verified Awtk_g2d reference maps BGRA8888->ARGB8888
+ * for exactly this reason. Get this wrong and BITBLT (a pure copy) still looks
+ * right, but BLD_H (which extracts channels for alpha math) shows wrong colors. */
 typedef enum {
     G2D_FORMAT_ARGB8888 = 0,
     G2D_FORMAT_ABGR8888 = 1,
