@@ -128,10 +128,10 @@ static mc_role_t mc_role_from_env(void)
  *
  * Flow:
  *   1. If hidden: sleep briefly and return (no compositor traffic).
- *   2. Commit cur_idx with the frame's damage rect.
- *   3. Wait for the next buffer to be released by the compositor.
- *   4. Repoint lcd_mem's offline_fb (= render target) to next buffer.
- *   5. Advance cur_idx.
+ *   2. Copy AWTK's private offline buffer into the current mc buffer.
+ *   3. Commit cur_idx with the frame's damage rect.
+ *   4. Wait for the next buffer to be released; advance cur_idx so the next
+ *      frame copies into a buffer the compositor has finished with.
  * ---------------------------------------------------------------------- */
 static ret_t lcd_mc_flush(lcd_t *lcd)
 {
@@ -146,20 +146,27 @@ static ret_t lcd_mc_flush(lcd_t *lcd)
         return RET_OK;
     }
 
-    /* Always commit full-surface damage.  Per-rect dirty-rect optimisation
-     * is a future follow-up: it would need a begin_frame hook on the
-     * lcd_mem path (the software canvas has no equivalent of EGL's
-     * post-render fence), which the current AWTK linux-fb layer does not
-     * provide. */
+    /* Copy AWTK's freshly-rendered private buffer into the current mc buffer.
+     * cur_idx was waited free at create (idx 0) or by the previous flush, so
+     * the compositor is not reading it now.  Both buffers are tight BGRA8888
+     * (line_length == w*4 on each side), so one linear copy is correct. */
+    lcd_mem_t *mem = (lcd_mem_t *)c->lcd;
+    uint8_t *src = (uint8_t *)lcd_mem_get_offline_fb(mem);
+    uint8_t *dst = (uint8_t *)mc_surface_buf_at(c->surf, c->cur_idx, NULL);
+    if (!src || !dst) {
+        fprintf(stderr, "[mc-lcd] flush: null fb (src=%p dst=%p idx=%d)\n",
+                (void *)src, (void *)dst, c->cur_idx);
+        return RET_FAIL;
+    }
+    memcpy(dst, src, (size_t)c->stride * c->h);
+
+    /* Always commit full-surface damage.  Per-rect dirty-rect optimisation is
+     * a future follow-up. */
     mc_rect_t damage = { 0, 0, (int16_t)c->w, (int16_t)c->h };
 
-    /* Ordering invariant (n_buf=2): we MUST commit the current buffer
-     * BEFORE waiting for the next one to become free.  Waiting first would
-     * deadlock because the compositor only releases a buffer in response to
-     * a commit — it has nothing to release until we send the commit.
-     * (True cross-frame pipelining without this constraint requires n_buf>=3.) */
-
-    /* Commit the buffer AWTK just finished drawing into. */
+    /* Ordering invariant (n_buf=2): commit the current buffer BEFORE waiting
+     * for the next one.  Waiting first would deadlock — the compositor only
+     * releases a buffer in response to a commit. */
     int rc = mc_surface_commit_idx(c->surf, c->cur_idx, &damage, 1);
     if (rc != 0) {
         fprintf(stderr, "[mc-lcd] mc_surface_commit_idx(%d) failed: %d\n",
@@ -167,34 +174,16 @@ static ret_t lcd_mc_flush(lcd_t *lcd)
         return RET_FAIL;
     }
 
-    /* Wait for the next buffer to be free (compositor has released it). */
+    /* Wait for the next buffer to be free, then make it the copy target for
+     * the next frame.  AWTK's private offline buffer is never repointed, so
+     * the lcd_mem fb_bitmaps[] registry stays valid (no "not found fb bitmap"). */
     int next = (c->cur_idx + 1) % c->n_buf;
     if (mc_surface_wait_buf_free(c->surf, next) != 0) {
         fprintf(stderr, "[mc-lcd] mc_surface_wait_buf_free(%d) failed\n", next);
         return RET_FAIL;
     }
-
-    /* Repoint the lcd_mem render target to the newly free buffer.
-     * For a single-fb lcd_mem AWTK renders into offline_fb; we keep
-     * online_fb in sync so anything that reads online_fb (e.g. dirty-rect
-     * tracking) sees the right pointer.  Both point to the same mc buffer
-     * because we render directly into the shared memory -- no copy needed. */
-    lcd_mem_t *mem = (lcd_mem_t *)c->lcd;
-    /* NULL out_stride: same tight-stride assumption as at create time (w*4). */
-    uint8_t *next_ptr = (uint8_t *)mc_surface_buf_at(c->surf, next, NULL);
-    if (!next_ptr) {
-        fprintf(stderr, "[mc-lcd] mc_surface_buf_at(%d) returned NULL\n", next);
-        return RET_FAIL;
-    }
-    lcd_mem_set_offline_fb(mem, next_ptr);
-    lcd_mem_set_online_fb(mem, next_ptr);
-
     c->cur_idx = next;
 
-    /* Chain original flush if present. */
-    if (c->flush_default) {
-        c->flush_default(lcd);
-    }
     return RET_OK;
 }
 
@@ -275,33 +264,27 @@ lcd_t *lcd_linux_mc_create(void)
         goto err;
     }
 
-    /* NULL out_stride: assumes mc surface stride == w*4 (tight BGRA8888).
-     * If the compositor ever pads rows, retrieve the stride and call
-     * lcd_mem_set_line_length accordingly. */
-    uint8_t *fb0 = (uint8_t *)mc_surface_buf_at(c->surf, 0, NULL);
-    if (!fb0) {
-        fprintf(stderr, "[mc-lcd] mc_surface_buf_at(0) failed\n");
-        goto err;
-    }
-
-    /* Create AWTK software lcd_mem over the shared buffer.
-     * lcd_mem_bgra8888_create_single_fb maps the mc buffer as the
-     * offline_fb (render target). online_fb stays NULL in the single-fb
-     * path; we set it explicitly so lcd_mem internals always have a valid
-     * online pointer. */
-    c->lcd = lcd_mem_bgra8888_create_single_fb((wh_t)c->w, (wh_t)c->h, fb0);
+    /* Create the AWTK software lcd with its OWN private offline buffer
+     * (alloc=TRUE).  AWTK renders into this single, stable buffer for the
+     * lifetime of the lcd; we copy it into the rotating mc buffer in flush.
+     *
+     * Why not map the mc buffer directly as the lcd_mem fb and rotate it?
+     * lcd_mem keeps a fixed registry (fb_bitmaps[], built at create time) and
+     * asserts "not found fb bitmap" if offline_fb is ever repointed to a
+     * buffer that wasn't registered there.  Repointing to mc buffer[1] on the
+     * 2nd frame tripped that assert (crash after one frame).  A stable private
+     * buffer sidesteps the whole multi-buffer registry/dirty-rect problem; the
+     * cost is one extra full-surface copy per frame (~1.5 MB at 800x480), the
+     * same B1 trade-off the compositor already makes.  Zero-copy (register all
+     * mc buffers via create_double_fb and rotate among them) is a future
+     * optimization. */
+    c->lcd = lcd_mem_bgra8888_create((wh_t)c->w, (wh_t)c->h, TRUE);
     if (!c->lcd) {
-        fprintf(stderr, "[mc-lcd] lcd_mem_bgra8888_create_single_fb failed\n");
+        fprintf(stderr, "[mc-lcd] lcd_mem_bgra8888_create failed\n");
         goto err;
     }
 
-    /* Point online_fb at the same buffer (single-fb: render target == display
-     * target, the compositor reads it after commit). */
-    lcd_mem_t *mem = (lcd_mem_t *)c->lcd;
-    lcd_mem_set_online_fb(mem, fb0);
-
-    /* Install our flush hook. AWTK calls lcd->flush at end_frame.
-     * We save the original so we can chain it. */
+    /* Install our flush hook. AWTK calls lcd->flush at end_frame. */
     c->flush_default = c->lcd->flush;
     c->lcd->flush    = lcd_mc_flush;
 
