@@ -1,0 +1,58 @@
+import os
+import copy
+import scons_argv
+compile_helper = scons_argv.get_compile_config()
+
+BIN_DIR = os.environ['BIN_DIR'];
+LIB_DIR = os.environ['LIB_DIR'];
+LCD_DEVICES = os.environ['LCD_DEVICES']
+
+env = DefaultEnvironment().Clone()
+SOURCES = [
+  'input_thread/mouse_thread.c',
+  'input_thread/input_thread.c',
+  'input_thread/common_coord.c',
+  'input_thread/input_dispatcher.c',
+  'lcd_linux/lcd_linux_fb.c',
+  'lcd_linux/lcd_linux_drm.c',
+  'lcd_linux/lcd_linux_egl.c',
+  'lcd_linux/lcd_mem_others.c',
+  'devices.c',
+  'main_loop_linux.c',
+]
+
+if os.environ['TSLIB_LIB_DIR']:
+  SOURCES = ['input_thread/tslib_thread.c'] + SOURCES;
+
+if LCD_DEVICES =='egl_for_fsl' :
+  SOURCES = Glob('egl_devices/fsl/*.c') + SOURCES;
+elif LCD_DEVICES =='egl_for_x11' :
+  SOURCES = Glob('egl_devices/x11/*.c') + SOURCES;
+elif LCD_DEVICES =='egl_for_gbm' :
+  SOURCES = Glob('egl_devices/gbm/*.c') + SOURCES;
+elif LCD_DEVICES =='egl_for_t507' :
+  SOURCES = Glob('egl_devices/t507/*.c') + SOURCES;
+elif LCD_DEVICES =='mc' :
+  # mc-compositor backend: EGL renders into ion dma-bufs imported as
+  # FBOs; touch is routed in from the compositor instead of /dev/input.
+  SOURCES = Glob('egl_devices/mc/*.c') + SOURCES;
+  SOURCES = ['input_thread/input_thread_mc.c'] + SOURCES;
+
+awtk_linux_fb = env.Library(os.path.join(LIB_DIR, 'awtk_linux_fb'), SOURCES)
+
+extern_codes = compile_helper.get_value('EXTERN_CODE', None)
+if extern_codes != None :
+  all_extern_codes = []
+  for extern_code in extern_codes :
+    all_extern_codes += Glob(extern_code);
+  __extern_code = env.Library(os.path.join(LIB_DIR, '__extern_code'), all_extern_codes)
+  Depends(awtk_linux_fb, __extern_code)
+
+env['LIBS'] = ['awtk_linux_fb'] + env['LIBS']
+
+env.Program(os.path.join(BIN_DIR, 'mouse_test'), ["test/mouse_thread_test.c"])
+env.Program(os.path.join(BIN_DIR, 'input_test'), ["test/input_thread_test.c"])
+env.Program(os.path.join(BIN_DIR, 'fb_test'), ["test/fb_test.c"])
+
+if os.environ['TSLIB_LIB_DIR']:
+  env.Program(os.path.join(BIN_DIR, 'tslib_test'), ["test/tslib_thread_test.c"])
