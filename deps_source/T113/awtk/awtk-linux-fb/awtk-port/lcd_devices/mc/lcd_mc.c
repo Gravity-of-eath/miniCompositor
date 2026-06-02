@@ -203,14 +203,13 @@ static ret_t lcd_mc_flush(lcd_t *lcd)
      * tracking) sees the right pointer.  Both point to the same mc buffer
      * because we render directly into the shared memory -- no copy needed. */
     lcd_mem_t *mem = (lcd_mem_t *)c->lcd;
-    int new_stride = 0;
-    uint8_t *next_ptr = (uint8_t *)mc_surface_buf_at(c->surf, next, &new_stride);
+    uint8_t *next_ptr = (uint8_t *)mc_surface_buf_at(c->surf, next, NULL);
     if (!next_ptr) {
         fprintf(stderr, "[mc-lcd] mc_surface_buf_at(%d) returned NULL\n", next);
         return RET_FAIL;
     }
-    mem->offline_fb = next_ptr;
-    mem->online_fb  = next_ptr;
+    lcd_mem_set_offline_fb(mem, next_ptr);
+    lcd_mem_set_online_fb(mem, next_ptr);
 
     c->cur_idx = next;
 
@@ -299,8 +298,7 @@ lcd_t *lcd_linux_mc_create(void)
         goto err;
     }
 
-    int stride_out = 0;
-    uint8_t *fb0 = (uint8_t *)mc_surface_buf_at(c->surf, 0, &stride_out);
+    uint8_t *fb0 = (uint8_t *)mc_surface_buf_at(c->surf, 0, NULL);
     if (!fb0) {
         fprintf(stderr, "[mc-lcd] mc_surface_buf_at(0) failed\n");
         goto err;
@@ -320,7 +318,7 @@ lcd_t *lcd_linux_mc_create(void)
     /* Point online_fb at the same buffer (single-fb: render target == display
      * target, the compositor reads it after commit). */
     lcd_mem_t *mem = (lcd_mem_t *)c->lcd;
-    mem->online_fb = fb0;
+    lcd_mem_set_online_fb(mem, fb0);
 
     /* Install our flush hook. AWTK calls lcd->flush at end_frame.
      * We save the original so we can chain it. */
