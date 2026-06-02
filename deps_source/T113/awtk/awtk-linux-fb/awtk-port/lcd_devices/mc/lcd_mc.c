@@ -52,10 +52,6 @@ static mc_surface_t *g_shared_mc_surf = NULL;
  * no-op recompose triggers. */
 static volatile int g_hidden = 0;
 
-/* Frame's bounding-box dirty rect captured in begin_frame. */
-static int g_dirty_x = 0, g_dirty_y = 0, g_dirty_w = 0, g_dirty_h = 0;
-static int g_dirty_valid = 0;
-
 /* -----------------------------------------------------------------------
  * Accessor symbols expected by input_thread_mc.c
  * ---------------------------------------------------------------------- */
@@ -80,25 +76,8 @@ int lcd_linux_mc_is_hidden(void)
 }
 
 /* -----------------------------------------------------------------------
- * Dirty-rect capture.
- * AWTK's lcd_linux layer calls this (or an equivalent) before nanovg/sw
- * rendering starts.  We record the bounding box and pass it as the mc
- * damage rect in the flush so the compositor only recomposites the
- * changed area.
- * ---------------------------------------------------------------------- */
-void lcd_mc_on_dirty_rect(int x, int y, int w, int h)
-{
-    g_dirty_x = x;
-    g_dirty_y = y;
-    g_dirty_w = w;
-    g_dirty_h = h;
-    g_dirty_valid = 1;
-}
-
-/* -----------------------------------------------------------------------
  * Internal context
  * ---------------------------------------------------------------------- */
-#define LCD_MC_MAX_BUFS 4
 
 typedef struct _mc_lcd_ctx_t {
     /* mc connection */
@@ -167,20 +146,18 @@ static ret_t lcd_mc_flush(lcd_t *lcd)
         return RET_OK;
     }
 
-    /* Build damage rect. */
-    mc_rect_t damage;
-    if (g_dirty_valid && g_dirty_w > 0 && g_dirty_h > 0) {
-        damage.x = (int16_t)g_dirty_x;
-        damage.y = (int16_t)g_dirty_y;
-        damage.w = (int16_t)g_dirty_w;
-        damage.h = (int16_t)g_dirty_h;
-        g_dirty_valid = 0;
-    } else {
-        damage.x = 0;
-        damage.y = 0;
-        damage.w = (int16_t)c->w;
-        damage.h = (int16_t)c->h;
-    }
+    /* Always commit full-surface damage.  Per-rect dirty-rect optimisation
+     * is a future follow-up: it would need a begin_frame hook on the
+     * lcd_mem path (the software canvas has no equivalent of EGL's
+     * post-render fence), which the current AWTK linux-fb layer does not
+     * provide. */
+    mc_rect_t damage = { 0, 0, (int16_t)c->w, (int16_t)c->h };
+
+    /* Ordering invariant (n_buf=2): we MUST commit the current buffer
+     * BEFORE waiting for the next one to become free.  Waiting first would
+     * deadlock because the compositor only releases a buffer in response to
+     * a commit — it has nothing to release until we send the commit.
+     * (True cross-frame pipelining without this constraint requires n_buf>=3.) */
 
     /* Commit the buffer AWTK just finished drawing into. */
     int rc = mc_surface_commit_idx(c->surf, c->cur_idx, &damage, 1);
@@ -203,6 +180,7 @@ static ret_t lcd_mc_flush(lcd_t *lcd)
      * tracking) sees the right pointer.  Both point to the same mc buffer
      * because we render directly into the shared memory -- no copy needed. */
     lcd_mem_t *mem = (lcd_mem_t *)c->lcd;
+    /* NULL out_stride: same tight-stride assumption as at create time (w*4). */
     uint8_t *next_ptr = (uint8_t *)mc_surface_buf_at(c->surf, next, NULL);
     if (!next_ptr) {
         fprintf(stderr, "[mc-lcd] mc_surface_buf_at(%d) returned NULL\n", next);
@@ -286,7 +264,6 @@ lcd_t *lcd_linux_mc_create(void)
 
     c->n_buf  = mc_surface_n_buf(c->surf);
     c->stride = mc_surface_buf_stride(c->surf);
-    if (c->n_buf > LCD_MC_MAX_BUFS) c->n_buf = LCD_MC_MAX_BUFS;
 
     printf("[mc-lcd] surface %dx%d stride=%d n_buf=%d role=%d\n",
            c->w, c->h, c->stride, c->n_buf, (int)role);
@@ -298,6 +275,9 @@ lcd_t *lcd_linux_mc_create(void)
         goto err;
     }
 
+    /* NULL out_stride: assumes mc surface stride == w*4 (tight BGRA8888).
+     * If the compositor ever pads rows, retrieve the stride and call
+     * lcd_mem_set_line_length accordingly. */
     uint8_t *fb0 = (uint8_t *)mc_surface_buf_at(c->surf, 0, NULL);
     if (!fb0) {
         fprintf(stderr, "[mc-lcd] mc_surface_buf_at(0) failed\n");
