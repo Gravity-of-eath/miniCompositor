@@ -268,8 +268,9 @@ esac
 cat > "$STAGE/scripts/start.sh" <<EOF
 #!/bin/sh
 # Start mc-compositor + LVGL demos + AWTK demo on the device.
-# Assumes /data/mc_stack/ layout from deploy.sh.
-HERE=/data/mc_stack
+# HERE resolves to the staging root (this script's parent dir), so it works
+# both deployed at /data/mc_stack and run in-place (e.g. /tmp/staging).
+HERE="\$(cd "\$(dirname "\$0")/.." && pwd)"
 LIB="\$HERE/lib"
 
 # kill any previous instances
