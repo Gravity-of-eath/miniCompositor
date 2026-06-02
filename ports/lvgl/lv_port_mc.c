@@ -106,8 +106,8 @@ static void mc_flush_cb(lv_display_t *disp,
                         uint8_t *px_map)
 {
     /* `px_map` is the start of the active draw buffer (i.e. one of our
-     * mc shm pointers). In DIRECT mode it doesn't change per-area within
-     * a frame, only between frames when LVGL swaps buffers. */
+     * mc shm pointers). It identifies which mc buffer LVGL rendered into
+     * this frame; we map it back to an index by pointer comparison below. */
     int aw = area->x2 - area->x1 + 1;
     int ah = area->y2 - area->y1 + 1;
     dmg_append(area->x1, area->y1, aw, ah);

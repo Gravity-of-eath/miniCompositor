@@ -92,8 +92,11 @@ if LCD_DEVICES == 'fb' or LCD_DEVICES == 'wayland':
 elif LCD_DEVICES == 'drm' :
   COMMON_CCFLAGS=COMMON_CCFLAGS+' -DWITH_NANOVG_AGGE -DWITH_LINUX_DRM -DWITH_FAST_LCD_PORTRAIT '
 elif LCD_DEVICES == 'mc_sw' :
-  # Software (CPU) mc-compositor client: no GPU/EGL.
+  # Software (CPU) mc-compositor client: no GPU/EGL. This is the T113 path.
   # Uses lcd_mem (AGGE software canvas) pointed at mc shared-memory buffers.
+  # NOTE: the lcd_devices_is_egl()=='mc' branch below is the *T507* EGL/Mali
+  # mc client and is unreachable on T113 (no EGL libs); it survives only
+  # because this tree is a copy of the T507 port layer.
   COMMON_CCFLAGS=COMMON_CCFLAGS+' -DWITH_NANOVG_AGGE -DWITH_LINUX_FB -DWITH_LCD_LINUX_MC '
 elif lcd_devices_is_egl(LCD_DEVICES) :
   COMMON_CCFLAGS=COMMON_CCFLAGS+' -DWITH_GPU_GL -DWITH_GPU_GLES2 -DWITH_GPU -DWITH_LINUX_EGL '

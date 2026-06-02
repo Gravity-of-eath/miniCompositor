@@ -54,3 +54,4 @@ output/
 
 # debug screenshots
 *.bmp
+/screenshot.png

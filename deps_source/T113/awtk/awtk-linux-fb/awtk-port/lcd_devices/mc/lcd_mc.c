@@ -87,11 +87,8 @@ typedef struct _mc_lcd_ctx_t {
     int           n_buf;
     int           cur_idx;          /* buffer we are currently drawing into */
 
-    /* AWTK software lcd pointed at cur_idx's CPU-mapped buffer */
+    /* AWTK software lcd (renders into its own private offline buffer) */
     lcd_t        *lcd;
-
-    /* Saved original flush hook so we can chain if needed */
-    ret_t       (*flush_default)(lcd_t *lcd);
 } mc_lcd_ctx_t;
 
 /* Single global instance (one AWTK process = one lcd). */
@@ -138,8 +135,11 @@ static ret_t lcd_mc_flush(lcd_t *lcd)
     mc_lcd_ctx_t *c = g_mc_lcd;
     if (!c) return RET_BAD_PARAMS;
 
-    /* Throttle when hidden: AWTK's main loop still runs (cheap for a static
-     * UI) but we don't commit frames the compositor can't display. */
+    /* Throttle when hidden: skip the commit so we don't feed frames the
+     * compositor won't display. NOTE: AWTK's main loop keeps running and, in
+     * FULL render mode, still repaints the whole canvas each iteration — the
+     * 200 ms sleep just rate-limits that. "Hidden" throttles output, not work;
+     * a true idle would need pausing AWTK's loop, which is out of scope here. */
     if (g_hidden) {
         struct timespec ts = { 0, 200 * 1000 * 1000 };
         nanosleep(&ts, NULL);
@@ -284,9 +284,10 @@ lcd_t *lcd_linux_mc_create(void)
         goto err;
     }
 
-    /* Install our flush hook. AWTK calls lcd->flush at end_frame. */
-    c->flush_default = c->lcd->flush;
-    c->lcd->flush    = lcd_mc_flush;
+    /* Install our flush hook. AWTK calls lcd->flush at end_frame. We fully
+     * own present (copy+commit), so the default lcd_mem flush is replaced
+     * outright, not chained. */
+    c->lcd->flush = lcd_mc_flush;
 
     /* Publish globals for input_thread_mc. */
     g_shared_mc_ctx  = c->mc;
