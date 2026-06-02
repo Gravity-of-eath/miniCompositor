@@ -51,3 +51,6 @@ output/
 
 # Vendor source archives (we keep the extracted tree under deps_source/)
 *.zip
+
+# debug screenshots
+*.bmp
