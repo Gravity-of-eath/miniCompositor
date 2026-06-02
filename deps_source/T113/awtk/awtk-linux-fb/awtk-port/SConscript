@@ -37,6 +37,12 @@ elif LCD_DEVICES =='mc' :
   # FBOs; touch is routed in from the compositor instead of /dev/input.
   SOURCES = Glob('egl_devices/mc/*.c') + SOURCES;
   SOURCES = ['input_thread/input_thread_mc.c'] + SOURCES;
+elif LCD_DEVICES =='mc_sw' :
+  # mc-compositor software (CPU) backend: T113 has no GPU/EGL.
+  # AWTK's lcd_mem (BGRA8888) is pointed directly at a CPU-mapped
+  # mc shared-memory surface buffer; touch comes from the compositor.
+  SOURCES = ['lcd_devices/mc/lcd_mc.c'] + SOURCES;
+  SOURCES = ['input_thread/input_thread_mc.c'] + SOURCES;
 
 awtk_linux_fb = env.Library(os.path.join(LIB_DIR, 'awtk_linux_fb'), SOURCES)
 

@@ -38,6 +38,10 @@
 
 #ifdef WITH_LCD_LINUX_MC
 #include "input_thread_mc.h"
+#ifndef WITH_LINUX_EGL
+/* Software (CPU) mc backend: lcd_devices/mc/lcd_mc.c */
+extern lcd_t *lcd_linux_mc_create(void);
+#endif
 #endif
 
 #ifdef WITH_LINUX_EGL
@@ -151,6 +155,14 @@ static ret_t lcd_create_on_devices_visit(void* ctx, const device_info_t* info) {
 #ifdef WITH_LINUX_EGL
   if (tk_str_eq(info->type, "fb")) {
     *p_lcd = lcd_linux_egl_create(info->path);
+  }
+#elif defined(WITH_LCD_LINUX_MC)
+  /* Software (CPU) mc-compositor client: ignore device path entries and
+   * create the mc lcd once on the first visit. lcd_linux_mc_create()
+   * connects to the compositor, queries screen size, and wraps lcd_mem. */
+  (void)info;
+  if (*p_lcd == NULL) {
+    *p_lcd = lcd_linux_mc_create();
   }
 #elif WITH_LINUX_DRM
   if (tk_str_eq(info->type, "drm")) {

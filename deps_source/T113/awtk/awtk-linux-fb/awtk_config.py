@@ -65,7 +65,7 @@ VGCANVAS='NANOVG'
 #VGCANVAS='NANOVG_PLUS'
 VGCANVAS = compile_helper.get_value('VGCANVAS', VGCANVAS)
 
-if LCD_DEVICES == 'fb' or LCD_DEVICES == 'drm' or LCD_DEVICES == 'wayland':
+if LCD_DEVICES == 'fb' or LCD_DEVICES == 'drm' or LCD_DEVICES == 'wayland' or LCD_DEVICES == 'mc_sw':
   LCD='LINUX_FB'
   NANOVG_BACKEND='AGGE'
 elif lcd_devices_is_egl(LCD_DEVICES) :
@@ -91,6 +91,10 @@ if LCD_DEVICES == 'fb' or LCD_DEVICES == 'wayland':
   COMMON_CCFLAGS=COMMON_CCFLAGS+' -DWITH_NANOVG_AGGE -DWITH_LINUX_FB -DWITH_FAST_LCD_PORTRAIT '
 elif LCD_DEVICES == 'drm' :
   COMMON_CCFLAGS=COMMON_CCFLAGS+' -DWITH_NANOVG_AGGE -DWITH_LINUX_DRM -DWITH_FAST_LCD_PORTRAIT '
+elif LCD_DEVICES == 'mc_sw' :
+  # Software (CPU) mc-compositor client: no GPU/EGL.
+  # Uses lcd_mem (AGGE software canvas) pointed at mc shared-memory buffers.
+  COMMON_CCFLAGS=COMMON_CCFLAGS+' -DWITH_NANOVG_AGGE -DWITH_LINUX_FB -DWITH_LCD_LINUX_MC '
 elif lcd_devices_is_egl(LCD_DEVICES) :
   COMMON_CCFLAGS=COMMON_CCFLAGS+' -DWITH_GPU_GL -DWITH_GPU_GLES2 -DWITH_GPU -DWITH_LINUX_EGL '
 
@@ -216,6 +220,12 @@ elif LCD_DEVICES =='mc':
   # rather than /dev/input/*.
   OS_FLAGS = OS_FLAGS + ' -DEGL_API_FB -DWITH_LCD_LINUX_MC '
   OS_LIBS  = [ 'GLESv2', 'EGL', 'mc' ] + OS_LIBS
+elif LCD_DEVICES =='mc_sw':
+  # Software (CPU) mc-compositor client: T113 has no GPU/EGL.
+  # lcd_devices/mc/lcd_mc.c wraps lcd_mem over mc shared-memory buffers.
+  # Touch routing comes from the compositor (input_thread_mc.c).
+  OS_FLAGS = OS_FLAGS + ' -DWITH_LCD_LINUX_MC '
+  OS_LIBS  = [ 'mc' ] + OS_LIBS
 elif LCD_DEVICES =='egl_for_x11' :
   #for egl for fsl
   OS_LIBS = [ 'X11', 'EGL', 'GLESv2' ] + OS_LIBS
@@ -260,7 +270,7 @@ if VGCANVAS == 'NANOVG':
   TK_ROOT_VAR = joinPath(VAR_DIR, 'awtk')
   OS_PROJECTS = [joinPath(TK_ROOT_VAR, '3rd/nanovg/SConscript') ]
   OS_CPPPATH += [joinPath(TK_3RD_ROOT, 'nanovg'), joinPath(TK_3RD_ROOT, 'nanovg/gl'), joinPath(TK_3RD_ROOT, 'nanovg/base') ]
-  if LCD_DEVICES =='fb' or LCD_DEVICES =='drm' or LCD_DEVICES =='wayland':
+  if LCD_DEVICES =='fb' or LCD_DEVICES =='drm' or LCD_DEVICES =='wayland' or LCD_DEVICES =='mc_sw':
     AWTK_STATIC_LIBS = AWTK_STATIC_LIBS + ['nanovg-agge', 'agge', 'nanovg']
     AWTK_DLL_DEPS_LIBS = ['nanovg-agge', 'agge', 'nanovg']
   elif lcd_devices_is_egl(LCD_DEVICES) :
@@ -336,7 +346,7 @@ os.environ['TOOLS_NAME'] = '';
 os.environ['GRAPHIC_BUFFER'] = GRAPHIC_BUFFER;
 os.environ['WITH_AWTK_SO'] = 'true'
 
-if LCD_DEVICES =='fb' or LCD_DEVICES =='drm' or LCD_DEVICES =='wayland':
+if LCD_DEVICES =='fb' or LCD_DEVICES =='drm' or LCD_DEVICES =='wayland' or LCD_DEVICES =='mc_sw':
   os.environ['NATIVE_WINDOW'] = 'raw';
 elif lcd_devices_is_egl(LCD_DEVICES) :
   os.environ['NATIVE_WINDOW'] = 'fb_gl';
