@@ -143,6 +143,12 @@ T113)
     ;;
 esac
 
+# Clean build/ first: it's a single shared object dir, and make keys on
+# timestamps, not on the compiler. Switching platforms (e.g. T113 armv7 ->
+# T507 aarch64) otherwise relinks stale cross-arch .o ("file format error").
+log "cleaning build/ (platform switch safety)"
+run make "${MAKE_PLATFORM_FLAGS[@]}" clean
+
 log "building mc compositor + tools (Makefile)"
 run make "${MAKE_PLATFORM_FLAGS[@]}" -j"$JOBS"
 
