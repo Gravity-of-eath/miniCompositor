@@ -11,10 +11,16 @@ OS_FLAGS = (
     " -DWITH_LCD_CLEAR_ALPHA -DWITH_FS_RES -DWITH_STB_FONT -DWITH_STB_IMAGE"
     " -DHAS_PTHREAD -DHAS_STD_MALLOC -DHAS_STDIO"
     " -DWITHOUT_CLIPBOARD -DWITH_NULL_IM"
-    " -DWITHOUT_FSCRIPT=1 -DWITHOUT_INPUT_METHOD=1 -DWITHOUT_XML_STYLE=1"
     " -ffunction-sections -fdata-sections"
     " -fno-asynchronous-unwind-tables -fno-unwind-tables"
     " -DWITH_LCD_LINUX_MC"
+    # NOTE: DWITHOUT_FSCRIPT/DWITHOUT_INPUT_METHOD/DWITHOUT_XML_STYLE are
+    # intentionally NOT set here: the demo binaries (demo1, demoui, etc.)
+    # link against libfscript_ext which has hard references to
+    # fscript_set_error / fscript_register_funcs. Those symbols are only
+    # present when fscript is NOT stripped.  These flags are size-reduction
+    # optimisations for production firmware; for the integration-test demo
+    # we accept the larger binary.
 )
 
 # link flags
@@ -105,7 +111,7 @@ LCD_DEVICES = "mc_sw"
 BUILD_TOOLS = True
 
 # build awtk's linux-fb's demos
-BUILD_DEMOS = False
+BUILD_DEMOS = True
 
 # build awtk's linux-fb's operation platform
 PLATFORM = None
