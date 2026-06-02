@@ -1,13 +1,14 @@
 /*
  * LVGL 9.0 port for mc surfaces.
  *
- * Render mode: DIRECT with two buffers pointing straight at the mc surface's
- * two shm halves. Per LVGL 9 docs:
- *   "With 2 buffers the buffers' content are kept in sync automatically and
- *    in flush_cb only address change is required."
- *
- * That means LVGL handles cross-buffer convergence for us — no manual
- * memcpy between buffers, no flicker, no chroma-key, no near-white tricks.
+ * Render mode: FULL with two buffers pointing straight at the mc surface's
+ * two shm halves. LVGL repaints the whole screen into the active buffer each
+ * frame, so every buffer we commit is fully painted (no stale/transparent
+ * scanlines). We tried DIRECT (only redraw invalid areas, rely on LVGL's
+ * cross-buffer dirty tracking) but our commit/rotate left never-painted
+ * alpha=0 scanlines in one buffer that showed as transparent "white lines"
+ * over an opaque base. FULL is still zero-copy (render straight into the mc
+ * buffer); the only cost is a full redraw per frame, fine at 800x480.
  *
  * Surfaces with role=POPUP can have a transparent screen: simply call
  *   lv_obj_set_style_bg_opa(lv_screen_active(), LV_OPA_TRANSP, 0);
@@ -251,10 +252,19 @@ int lv_port_mc_init(mc_surface_t *surf, int w, int h, int draw_buf_lines)
     if (!g_disp) return -1;
 
     lv_display_set_color_format(g_disp, LV_COLOR_FORMAT_ARGB8888);
+    /* FULL (not DIRECT) render mode: LVGL repaints the ENTIRE screen into the
+     * active buffer every frame.  DIRECT only redraws each frame's invalid
+     * areas, relying on LVGL's cross-buffer dirty tracking to keep BOTH mc
+     * buffers consistent -- but with our commit/rotate that left stale (never-
+     * painted, alpha=0) scanlines in one buffer, which showed as transparent
+     * "white lines" over an opaque base (e.g. AWTK).  FULL guarantees every
+     * committed buffer is wholly painted.  Still zero-copy (LVGL renders
+     * straight into the mc buffer); cost is a full redraw per frame, fine at
+     * 800x480.  Holes are still punched post-render in mc_flush_cb. */
     lv_display_set_buffers(g_disp,
                            g_buf_addr[0], g_buf_addr[1],
                            bytes,
-                           LV_DISPLAY_RENDER_MODE_DIRECT);
+                           LV_DISPLAY_RENDER_MODE_FULL);
     lv_display_set_flush_cb(g_disp, mc_flush_cb);
     lv_display_set_flush_wait_cb(g_disp, mc_flush_wait_cb);
     return 0;
