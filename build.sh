@@ -12,10 +12,12 @@
 #
 # Outputs:
 #   output/<PLATFORM>/staging/        full unpacked tree, ready to scp/adb push
-#     bin/                            mc-compositor, demos, tools
-#     lib/                            libts (tslib runtime) + plugins
+#     bin/                            mc-compositor, mc-launcher, tools, demos
+#     lib/                            libawtk.so / tslib runtime + plugins
 #     res/                            AWTK demo assets
 #     scripts/start.sh, stop.sh       deploy/run helpers
+#     sdk/                            dev kit: headers + libs to build mc
+#       include/{mc,lvgl,lvgl-conf,ports,awtk}, lib/{libmc.a,liblvgl9.a,libawtk.so}
 #   output/<PLATFORM>/mc-<PLATFORM>-<DATE>.tar.gz   archive of the above
 #
 # Honoured env vars:
@@ -172,6 +174,7 @@ fi
 # ---------- 2. AWTK (optional) -----------------------------------------
 
 AWTK_LINUX_FB="deps_source/$PLATFORM/awtk/awtk-linux-fb"
+AWTK_OK=0   # set to 1 once AWTK is built+packaged; gates SDK header/lib copy
 
 if [[ "${SKIP_AWTK:-0}" == "1" ]]; then
     log "SKIP_AWTK=1 set, skipping AWTK build"
@@ -200,6 +203,7 @@ else
     else
         cp -v "$AWTK_LINUX_FB/bin/libawtk.so" "$STAGE/lib/"
         cp -v "$AWTK_LINUX_FB/bin/demo1"       "$STAGE/bin/awtk-demo"
+        AWTK_OK=1
     fi
 fi
 
@@ -230,6 +234,91 @@ if [[ -d "$AWTK_LINUX_FB/release/assets" ]]; then
 else
     warn "AWTK release/assets not found -- AWTK demo will run without UI assets"
 fi
+
+# ---------- 4.5 SDK: headers + dev libs for building mc clients --------
+#
+# staging/sdk/ is the developer kit (separate from the runtime bin/lib/ so a
+# device deploy needn't carry it). Include roots mirror the in-tree build's
+# -I flags, so the same #include lines that the demos use work unchanged:
+#   mc client : #include "mc.h"          -> -Isdk/include/mc
+#   LVGL      : #include "lvgl.h"         -> -Isdk/include/lvgl
+#               #include "lv_port_mc.h"   -> -Isdk/include/ports
+#               (LV_CONF via)             -> -Isdk/include/lvgl-conf -DLV_CONF_INCLUDE_SIMPLE
+#   AWTK      : #include "awtk.h"         -> -Isdk/include/awtk
+SDK="$STAGE/sdk"
+log "packaging SDK (headers + dev libs) into sdk/"
+mkdir -p "$SDK/include/mc" "$SDK/lib"
+
+# copy only header files (preserve dir structure), following symlinked trees.
+copy_headers() {  # <src-dir> <dst-dir>
+    [[ -d "$1" ]] || return 0
+    rsync -aL --include='*/' --include='*.h' --include='*.inc' --exclude='*' \
+          "$1"/ "$2"/
+}
+
+# --- mc client API (always present) ---
+cp -v libmc/include/*.h "$SDK/include/mc/"
+cp -v common/proto.h    "$SDK/include/mc/"
+cp -v build/libmc.a     "$SDK/lib/"
+
+# --- LVGL (when built/available) ---
+LVGL_SRC_DIR="deps_source/$PLATFORM/lvgl-release-v9.0"
+LVGL_LIB_DIR="deps_libs/$PLATFORM/lvgl"
+if [[ "$SKIP_LVGL" != "1" && -f "$LVGL_LIB_DIR/liblvgl9.a" ]]; then
+    log "  + LVGL headers + liblvgl9.a"
+    copy_headers "$LVGL_SRC_DIR" "$SDK/include/lvgl"
+    mkdir -p "$SDK/include/lvgl-conf" "$SDK/include/ports"
+    cp -v "$LVGL_LIB_DIR/lv_conf.h" "$SDK/include/lvgl-conf/"
+    cp -v ports/lvgl/lv_port_mc.h   "$SDK/include/ports/"
+    cp -v "$LVGL_LIB_DIR/liblvgl9.a" "$SDK/lib/"
+else
+    warn "  LVGL not packaged in SDK (no liblvgl9.a)"
+fi
+
+# --- AWTK (when built) ---
+if [[ "$AWTK_OK" == "1" ]]; then
+    log "  + AWTK headers + libawtk.so"
+    copy_headers "deps_source/$PLATFORM/awtk/awtk/src" "$SDK/include/awtk"
+    cp -v "$AWTK_LINUX_FB"/bin/lib*.so "$SDK/lib/" 2>/dev/null || true
+else
+    warn "  AWTK not packaged in SDK (not built)"
+fi
+
+# --- SDK README with exact build flags ---
+cat > "$SDK/README.txt" <<EOF
+mc client SDK for $PLATFORM
+Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+Layout:
+  include/mc/         mc client API (mc.h, proto.h)
+  include/lvgl/       LVGL 9.0 headers (#include "lvgl.h")
+  include/lvgl-conf/  lv_conf.h for this platform
+  include/ports/      lv_port_mc.h (LVGL <-> mc glue)
+  include/awtk/       AWTK headers (#include "awtk.h")
+  lib/                libmc.a, liblvgl9.a, libawtk.so (+ companions)
+
+Cross toolchain: the same one build.sh used for $PLATFORM
+  (e.g. $PLATFORM=T113 -> ${T113_TOOLCHAIN:-arm-openwrt-linux-muslgnueabi-}gcc).
+
+Build a bare mc client (no UI toolkit):
+  \$CC myclient.c -Isdk/include/mc sdk/lib/libmc.a -lpthread -o myclient
+
+Build an LVGL mc client:
+  \$CC app.c \\
+      -Isdk/include/mc -Isdk/include/lvgl -Isdk/include/lvgl-conf \\
+      -Isdk/include/ports -DLV_CONF_INCLUDE_SIMPLE \\
+      sdk/lib/libmc.a sdk/lib/liblvgl9.a -lm -lpthread -o app
+  (link your app's lv_port_mc.c too, or reuse the one in ports/.)
+
+AWTK: include/awtk/ holds the awtk/src public headers and lib/libawtk.so
+(+ companion .so). NOTE: AWTK mc clients are normally built with the
+awtk-linux-fb scons system (LCD_DEVICES=mc_sw) -- a standalone
+'#include "awtk.h"' needs AWTK's full set of include roots (ext_widgets,
+custom_widgets, 3rd/...), and this AWTK snapshot's umbrella header pulls a
+custom widget (vpage) that isn't in src/, so the umbrella won't compile
+on its own. Include the specific awtk/src headers your app uses, link
+lib/libawtk.so, and build via awtk-linux-fb. See docs/PORTING.md.
+EOF
 
 # ---------- 5. runtime scripts -----------------------------------------
 
@@ -346,13 +435,15 @@ mc framework build for $PLATFORM
 Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 Layout:
-  bin/           mc-compositor + demos + helper tools
-  lib/           tslib runtime + plugins (libts-1.3.so.0)
-  lib/libawtk.so AWTK shared library (used by awtk-demo1)
+  bin/           mc-compositor + mc-launcher + demos + helper tools
+  lib/           libawtk.so / tslib runtime + plugins (libts-1.3.so.0)
   res/assets/    AWTK demo UI assets
   scripts/       deploy.sh, start.sh, stop.sh
+  sdk/           developer kit: headers + libs to build your own mc clients
+                 (include/{mc,lvgl,lvgl-conf,ports,awtk}, lib/*.a + libawtk.so)
+                 see sdk/README.txt. Runtime-only; deploy.sh does NOT push it.
 
-Deploy (uses adb):
+Deploy (uses adb; pushes bin/lib/res only, not sdk/):
   ./scripts/deploy.sh
 
 Run on device:
