@@ -175,6 +175,7 @@ cp -v build/mc-launcher     "$STAGE/bin/"
 if [[ "$SKIP_LVGL" != "1" ]]; then
     cp -v build/demo-fullscreen "$STAGE/bin/"
     cp -v build/demo-popup      "$STAGE/bin/"
+    cp -v build/toast-daemon    "$STAGE/bin/"
 fi
 
 # ---------- 2. AWTK (optional) -----------------------------------------
@@ -369,7 +370,7 @@ HERE="\$(cd "\$(dirname "\$0")/.." && pwd)"
 LIB="\$HERE/lib"
 
 # kill any previous instances
-for p in \$(ps | grep -E "mc-compositor|demo-fullscreen|demo-popup|awtk-demo" | grep -v grep | awk '{print \$1}'); do
+for p in \$(ps | grep -E "mc-compositor|demo-fullscreen|demo-popup|awtk-demo|toast-daemon" | grep -v grep | awk '{print \$1}'); do
     kill -9 \$p 2>/dev/null
 done
 sleep 1
@@ -418,6 +419,11 @@ if [ -x "\$HERE/bin/demo-popup" ]; then
     sleep 2
 fi
 
+if [ -x "\$HERE/bin/toast-daemon" ]; then
+    launch /tmp/mc-toast.log \\
+        "\$HERE/bin/toast-daemon --socket /tmp/mc.sock"
+fi
+
 echo "started. logs in /tmp/mc-*.log"
 ps | grep -E "mc-comp|demo-|awtk-demo" | grep -v grep | grep -v "sh -c"
 EOF
@@ -426,7 +432,7 @@ chmod +x "$STAGE/scripts/start.sh"
 cat > "$STAGE/scripts/stop.sh" <<'EOF'
 #!/bin/sh
 # Stop the entire mc stack.
-for p in $(ps | grep -E "mc-compositor|demo-fullscreen|demo-popup|awtk-demo" | grep -v grep | awk '{print $1}'); do
+for p in $(ps | grep -E "mc-compositor|demo-fullscreen|demo-popup|awtk-demo|toast-daemon" | grep -v grep | awk '{print $1}'); do
     kill -9 $p 2>/dev/null
 done
 sleep 1
