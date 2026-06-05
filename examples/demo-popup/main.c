@@ -76,6 +76,12 @@ static void on_ok_clicked(lv_event_t *e)
             g_ok_count, r1 == 0 ? "ok" : "FAILED",
             tgt, r2 == 0 ? "ok" : "FAILED");
 
+    /* Also fire a toast so the toast-daemon path is exercised on-device. */
+    char tmsg[64];
+    snprintf(tmsg, sizeof(tmsg), "OK pressed #%d", g_ok_count);
+    mc_toast(g_ctx, tmsg, 2000,
+             (mc_toast_pos_t)(g_ok_count % 3));   /* cycle bottom/center/top */
+
     /* Flash the dot green for visual feedback */
     lv_obj_set_style_bg_color(g_dot, lv_color_hex(0x66BB6A), LV_PART_MAIN);
 }

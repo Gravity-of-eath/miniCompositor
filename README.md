@@ -148,6 +148,54 @@ Tap anywhere outside the popup card to interact with the visible
 fullscreen app.
 
 
+## Toast notifications
+
+Any client can display a brief, auto-dismissing status card via a single call:
+
+```c
+int mc_toast(mc_ctx_t *ctx, const char *text, int duration_ms, mc_toast_pos_t pos);
+```
+
+The call just publishes a `ui/toast` bus message and returns immediately — the
+client does zero rendering. `toast-daemon` (started automatically by `start.sh`)
+picks up the message and renders the card.
+
+### Positions
+
+| Constant | Value | Description |
+|---|---|---|
+| `MC_TOAST_POS_BOTTOM` | 0 | Centred near the bottom edge (default) |
+| `MC_TOAST_POS_CENTER` | 1 | Centred in the middle of the screen |
+| `MC_TOAST_POS_TOP`    | 2 | Centred near the top edge |
+
+Out-of-range `pos` values fall back to `MC_TOAST_POS_BOTTOM`.
+
+### duration_ms
+
+`<= 0` uses the default of **2000 ms**. After the duration the card
+auto-dismisses. A new `mc_toast` call while one is visible immediately
+**replaces** the current toast and restarts the timer (no queuing, no ghosting).
+
+### Compositor behaviour
+
+- Rendered at `MC_ROLE_TOAST` (z = 200) — above fullscreen and popup surfaces.
+- Does **not** take focus. Tap events fall through to the app beneath
+  (the compositor's hit-test skips TOAST surfaces entirely).
+- If `toast-daemon` is not running, `mc_toast` still returns 0 —
+  the `ui/toast` message is published but no one renders it.
+
+### Usage example
+
+```c
+mc_toast(ctx, "已连接",  0,    MC_TOAST_POS_BOTTOM);  // default 2 s, bottom
+mc_toast(ctx, "电量低",  3000, MC_TOAST_POS_TOP);     // 3 s, top
+mc_toast(ctx, "已保存",  1500, MC_TOAST_POS_CENTER);  // 1.5 s, centre
+```
+
+`demo-popup` exercises this path: each tap of its OK button fires
+`mc_toast(ctx, "OK pressed #N", 2000, N % 3)`, cycling bottom → centre → top.
+
+
 ## Diagnostic env vars
 
 These are off by default; set them to 1 to enable per-frame logging.
