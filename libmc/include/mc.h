@@ -25,6 +25,7 @@ typedef enum {
     MC_ROLE_FULLSCREEN = 1,
     MC_ROLE_POPUP      = 2,
     MC_ROLE_BG         = 3,
+    MC_ROLE_TOAST      = 4,   /* 最上层、不可触摸的提示层（compositor z=200） */
 } mc_role_t;
 
 typedef struct { int16_t x, y, w, h; } mc_rect_t;
@@ -176,6 +177,21 @@ typedef struct {
 /* Drain one event from the compositor socket. timeout_ms is currently
  * a hint (0 = nonblocking, >0 not yet implemented; treated as 0). */
 int mc_dispatch(mc_ctx_t *, mc_event_t *out, int timeout_ms);
+
+/* ---- toast ----
+ * 弹出一条最上层、不占焦点、不可触摸、定时消失的文字提示。
+ * 本质是一次 bus publish（topic "ui/toast"），由 toast 守护进程渲染。
+ *   text:        UTF-8；过长按 UTF-8 边界截断。
+ *   duration_ms: <=0 用默认 2000ms。
+ *   pos:         位置，越界回落 BOTTOM。
+ * 返回 0 成功，负值为 MC_E_*（守护进程未运行时仍返回 0，只是看不到提示）。*/
+typedef enum {
+    MC_TOAST_POS_BOTTOM = 0,
+    MC_TOAST_POS_CENTER = 1,
+    MC_TOAST_POS_TOP    = 2,
+} mc_toast_pos_t;
+
+int mc_toast(mc_ctx_t *ctx, const char *text, int duration_ms, mc_toast_pos_t pos);
 
 /*
  * Bus (pub/sub).

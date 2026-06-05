@@ -158,6 +158,7 @@ COMP_SRC    := compositor/main.c \
 LIBMC_SRC   := libmc/src/connect.c \
                libmc/src/surface.c \
                libmc/src/bus.c \
+               libmc/src/toast.c \
                libmc/src/util.c \
                $(COMMON_SRC)
 
@@ -210,6 +211,15 @@ $(POP_OBJ):  MC_DEMO_CFLAGS=$(LVGL_INC)
 all: $(COMP_BIN) $(LIBMC_A) $(TEST_BIN) $(FILL_BIN) $(BUS_BIN) $(LAUNCHER_BIN)
 
 demos: $(FS_BIN) $(POP_BIN)
+
+# 纯函数线协议单元测试（宿主机 cc 即可，不依赖交叉/LVGL）
+WIRE_TEST_BIN := $(OUT)/mc-toast-wire-test
+$(WIRE_TEST_BIN): tools/mc-toast-wire-test.c common/mc_toast_wire.h
+	@mkdir -p $(OUT)
+	$(CC) $(CFLAGS_ALL) -o $@ tools/mc-toast-wire-test.c
+
+wire-test: $(WIRE_TEST_BIN)
+	$(WIRE_TEST_BIN)
 
 # --- generic compile rule ----------------------------------------------
 $(OUT)/%.o: %.c
@@ -264,4 +274,4 @@ print-config:
 	@echo "LDFLAGS_ALL      = $(LDFLAGS_ALL)"
 	@echo "LVGL_LIB         = $(LVGL_LIB)"
 
-.PHONY: all clean print-config demos
+.PHONY: all clean print-config demos wire-test
