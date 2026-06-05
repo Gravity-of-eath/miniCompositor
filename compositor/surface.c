@@ -27,9 +27,10 @@ static int format_bpp(uint8_t fmt)
     }
 }
 
-static int default_z_order(uint8_t role)
+int default_z_order(uint8_t role)
 {
     switch (role) {
+    case 4: return 200;   /* TOAST — above everything */
     case 2: return 100;   /* POPUP */
     case 3: return 0;     /* BG */
     case 1: default:
