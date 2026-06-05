@@ -15,6 +15,8 @@
 #include "mc_toast_wire.h"
 #include "lv_port_mc.h"
 
+#include <errno.h>
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
@@ -162,10 +164,16 @@ int main(int argc, char **argv)
         int timeout = -1;  /* block until a bus message arrives */
         if (g_visible) {
             uint64_t now = now_ms();
-            timeout = (now >= g_expire_ms) ? 0 : (int)(g_expire_ms - now);
+            if (now >= g_expire_ms) {
+                timeout = 0;
+            } else {
+                uint64_t rem = g_expire_ms - now;
+                timeout = (rem > (uint64_t)INT_MAX) ? INT_MAX : (int)rem;
+            }
         }
         struct pollfd p = { .fd = fd, .events = POLLIN };
-        poll(&p, 1, timeout);
+        int pr = poll(&p, 1, timeout);
+        if (pr < 0 && errno == EINTR) continue;   /* signal wake-up: re-check s_running */
 
         mc_event_t ev;
         while (mc_dispatch(g_ctx, &ev, 0) > 0) handle_bus(&ev);
