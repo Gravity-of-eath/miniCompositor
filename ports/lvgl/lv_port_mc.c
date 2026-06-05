@@ -269,3 +269,16 @@ int lv_port_mc_init(mc_surface_t *surf, int w, int h, int draw_buf_lines)
     lv_display_set_flush_wait_cb(g_disp, mc_flush_wait_cb);
     return 0;
 }
+
+void lv_port_mc_deinit(void)
+{
+    if (g_disp) {
+        lv_display_delete(g_disp);   /* also frees its default screen */
+        g_disp = NULL;
+    }
+    g_surf = NULL;
+    g_buf_addr[0] = g_buf_addr[1] = NULL;
+    g_dmg_n = 0;
+    g_n_holes = 0;
+    g_last_committed_idx = -1;
+}

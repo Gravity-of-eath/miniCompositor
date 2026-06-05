@@ -36,4 +36,10 @@ void lv_port_mc_set_event_cb(lv_port_mc_event_cb_t cb, void *user);
 void lv_port_mc_add_hole(int x, int y, int w, int h);
 void lv_port_mc_clear_holes(void);
 
+/* Tear down the display created by lv_port_mc_init so the port can be
+ * re-init'd against a different surface (e.g. a toast shown repeatedly).
+ * Deletes the LVGL display (and its screen objects) and drops the surface
+ * reference. Safe to call when not initialized. */
+void lv_port_mc_deinit(void);
+
 #endif
