@@ -184,7 +184,7 @@ int mc_dispatch(mc_ctx_t *, mc_event_t *out, int timeout_ms);
  *   text:        UTF-8；过长按 UTF-8 边界截断。
  *   duration_ms: <=0 用默认 2000ms。
  *   pos:         位置，越界回落 BOTTOM。
- * 返回 0 成功，负值为 MC_E_*（守护进程未运行时仍返回 0，只是看不到提示）。*/
+ * 返回 0 成功，非零为 MC_E_* 错误码（守护进程未运行时仍返回 0，只是看不到提示）。*/
 typedef enum {
     MC_TOAST_POS_BOTTOM = 0,
     MC_TOAST_POS_CENTER = 1,

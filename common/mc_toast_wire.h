@@ -20,18 +20,22 @@
 
 /* pos values mirror mc_toast_pos_t (0=bottom,1=center,2=top). */
 
-/* Back off `n` so it never splits a UTF-8 multibyte sequence: if byte n
- * is a continuation byte (10xxxxxx), walk back to the lead byte. Returns a
- * safe length <= n. */
+/* Given a proposed text length `n` (an EXCLUSIVE end index — the count of
+ * bytes we intend to keep), back it off so the cut never lands in the middle
+ * of a UTF-8 multibyte sequence. We inspect the byte AT index `n` (the first
+ * byte that would be dropped): while it is a continuation byte (10xxxxxx), the
+ * boundary is mid-sequence, so shrink `n` until it points at a lead byte.
+ * Returns a safe length <= n. */
 static inline size_t mc_toast_utf8_floor(const char *s, size_t n)
 {
     while (n > 0 && ((unsigned char)s[n] & 0xC0) == 0x80) n--;
     return n;
 }
 
-/* Encode into `out` (cap >= MC_TOAST_HDR_BYTES + MC_TOAST_MAX_TEXT).
- * Returns total byte count, or -1 on bad args. duration<=0 and out-of-range
- * pos are normalized by the CALLER (mc_toast); here we just pack. */
+/* Encode into `out` (needs outcap >= MC_TOAST_HDR_BYTES; text is clamped to
+ * min(outcap - MC_TOAST_HDR_BYTES, MC_TOAST_MAX_TEXT) bytes at a UTF-8
+ * boundary). Returns total byte count, or -1 on bad args. duration<=0 and
+ * out-of-range pos are normalized by the CALLER (mc_toast); here we just pack. */
 static inline int mc_toast_wire_encode(uint8_t *out, size_t outcap,
                                        const char *text,
                                        uint32_t duration_ms, uint8_t pos)
