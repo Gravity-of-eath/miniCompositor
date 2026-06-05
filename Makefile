@@ -202,15 +202,20 @@ POP_SRC     := examples/demo-popup/main.c
 POP_OBJ     := $(POP_SRC:%.c=$(OUT)/%.o)
 POP_BIN     := $(OUT)/demo-popup
 
+TOAST_SRC   := examples/toast-daemon/main.c
+TOAST_OBJ   := $(TOAST_SRC:%.c=$(OUT)/%.o)
+TOAST_BIN   := $(OUT)/toast-daemon
+
 # Demos require LVGL flags
 $(PORT_OBJ): MC_DEMO_CFLAGS=$(LVGL_INC)
 $(FS_OBJ):   MC_DEMO_CFLAGS=$(LVGL_INC)
 $(POP_OBJ):  MC_DEMO_CFLAGS=$(LVGL_INC)
+$(TOAST_OBJ): MC_DEMO_CFLAGS=$(LVGL_INC)
 
 # --- default targets ---------------------------------------------------
 all: $(COMP_BIN) $(LIBMC_A) $(TEST_BIN) $(FILL_BIN) $(BUS_BIN) $(LAUNCHER_BIN)
 
-demos: $(FS_BIN) $(POP_BIN)
+demos: $(FS_BIN) $(POP_BIN) $(TOAST_BIN)
 
 # 纯函数线协议单元测试（宿主机 cc 即可，不依赖交叉/LVGL）
 WIRE_TEST_BIN := $(OUT)/mc-toast-wire-test
@@ -256,6 +261,9 @@ $(FS_BIN): $(FS_OBJ) $(PORT_OBJ) $(LIBMC_A) $(LVGL_LIB)
 
 $(POP_BIN): $(POP_OBJ) $(PORT_OBJ) $(LIBMC_A) $(LVGL_LIB)
 	$(CC) $(CFLAGS_ALL) -o $@ $(POP_OBJ) $(PORT_OBJ) $(LIBMC_A) $(LVGL_LIBS) $(LDFLAGS_ALL)
+
+$(TOAST_BIN): $(TOAST_OBJ) $(PORT_OBJ) $(LIBMC_A) $(LVGL_LIB)
+	$(CC) $(CFLAGS_ALL) -o $@ $(TOAST_OBJ) $(PORT_OBJ) $(LIBMC_A) $(LVGL_LIBS) $(LDFLAGS_ALL)
 
 clean:
 	rm -rf $(OUT)
