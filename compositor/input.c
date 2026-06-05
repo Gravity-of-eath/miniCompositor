@@ -30,6 +30,9 @@ struct mc_surface *mc_input_hit_test(struct mc_server *s, int x, int y)
     }
     for (int i = 0; i < n; i++) {
         struct mc_surface *sf = list[i];
+        /* TOAST layer (role 4) is input-transparent: never grabs touch,
+         * so it can't steal focus and taps fall through to the app below. */
+        if (sf->role == 4 /* MC_ROLE_TOAST */) continue;
         int sx0 = sf->x, sy0 = sf->y;
         int sx1 = sx0 + sf->w, sy1 = sy0 + sf->h;
         if (x >= sx0 && x < sx1 && y >= sy0 && y < sy1) return sf;
