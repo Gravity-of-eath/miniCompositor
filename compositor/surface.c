@@ -27,7 +27,7 @@ static int format_bpp(uint8_t fmt)
     }
 }
 
-int default_z_order(uint8_t role)
+int mc_surface_default_z_order(uint8_t role)
 {
     switch (role) {
     case 4: return 200;   /* TOAST — above everything */
@@ -91,7 +91,7 @@ struct mc_surface *mc_surface_create(struct mc_server *s,
      * aligned. When hardware accelerators are added later we can introduce
      * a separate "alloc_stride" while keeping "logical stride" == w*bpp. */
     sf->stride       = (uint32_t)w * bpp;
-    sf->z_order      = default_z_order(sf->role);
+    sf->z_order      = mc_surface_default_z_order(sf->role);
     sf->focus_stamp  = ++s->next_focus_stamp;
     sf->visible      = 1;
     sf->cur_scanout  = -1;

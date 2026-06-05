@@ -323,7 +323,7 @@ static int handle_set_role(struct mc_server *s, struct mc_client *c,
     }
     sf->modal = modal;
     sf->x = px; sf->y = py;
-    sf->z_order = default_z_order(sf->role);
+    sf->z_order = mc_surface_default_z_order(sf->role);
     if (z_changed || geom_changed) {
         mc_request_recompose(s);
         mc_lifecycle_recompute(s);

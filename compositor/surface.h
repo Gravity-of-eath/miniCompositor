@@ -107,7 +107,7 @@ struct mc_surface *mc_surface_get(struct mc_server *s, uint32_t sid);
 
 /* Default z-order for a role (FULLSCREEN=10, POPUP=100, BG=0, TOAST=200).
  * Shared by surface creation and SET_ROLE handling so the two never drift. */
-int default_z_order(uint8_t role);
+int mc_surface_default_z_order(uint8_t role);
 
 /* Destroy + release everything. */
 void mc_surface_destroy(struct mc_server *s, uint32_t sid);
